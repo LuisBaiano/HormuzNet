@@ -1,0 +1,10 @@
+FROM golang:1.23-alpine AS builder
+WORKDIR /app
+COPY go.mod ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o base_exec ./cmd/base/
+
+FROM scratch
+COPY --from=builder /app/base_exec /base_exec
+ENTRYPOINT ["/base_exec"]

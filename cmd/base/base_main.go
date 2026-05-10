@@ -15,31 +15,29 @@ import (
 	"HormuzNet/internal/models"
 )
 
-// ── Configuração ──────────────────────────────────────────────────────────────
+// ── Constantes ────────────────────────────────────────────────────────────────
 
 const (
-	missaoDurMin    = 8 * time.Second  // duração mínima de uma missão simulada
-	missaoDurMax    = 20 * time.Second // duração máxima
-	retornoDur      = 5 * time.Second  // tempo de retorno à base
-	bateriaConsumo  = 5               // % de bateria consumida por missão
-	bateriaRecarga  = 2               // % de bateria recarregada por segundo em espera
-	keepaliveIntv   = 10 * time.Second
+	missaoDurMin   = 8 * time.Second
+	missaoDurMax   = 20 * time.Second
+	retornoDur     = 5 * time.Second
+	bateriaConsumo = 5
+	bateriaRecarga = 2
+	keepaliveIntv  = 10 * time.Second
+	droneKAIntv    = 3 * time.Second // intervalo do sinal "estou vivo" do drone
 )
 
-// ── Estado da base ────────────────────────────────────────────────────────────
+// ── Base ──────────────────────────────────────────────────────────────────────
 
 type Base struct {
-	id      string
-	setorID string
-
-	// Endereços dos brokers, em ordem de prioridade (fallback)
+	id          string
+	setorID     string
+	posicao     models.Coordenada
 	brokerAddrs []string
 
-	// Drones gerenciados por esta base
 	dronesMu sync.RWMutex
 	drones   map[string]*DroneLocal
 
-	// Conexão TCP ativa com o broker
 	connMu  sync.Mutex
 	conn    net.Conn
 	encoder *json.Encoder
@@ -47,36 +45,40 @@ type Base struct {
 	logger *log.Logger
 }
 
-// DroneLocal representa o estado de um drone no processo da base.
 type DroneLocal struct {
-	mu           sync.Mutex
-	info         models.InfoDrone
-	ocupado      bool
+	mu      sync.Mutex
+	info    models.InfoDrone
+	ocupado bool
 }
 
-func novaBase(id, setorID string, brokerAddrs []string, numDrones int) *Base {
+func novaBase(id, setorID string, pos models.Coordenada, addrs []string, numDrones int) *Base {
 	b := &Base{
 		id:          id,
 		setorID:     setorID,
-		brokerAddrs: brokerAddrs,
+		posicao:     pos,
+		brokerAddrs: addrs,
 		drones:      make(map[string]*DroneLocal),
 		logger:      log.New(os.Stdout, fmt.Sprintf("[BASE:%s] ", id), log.LstdFlags),
 	}
-
-	// Cria drones com bateria inicial aleatória entre 70-100%
 	for i := 1; i <= numDrones; i++ {
 		droneID := fmt.Sprintf("drone_%s_%02d", id, i)
+		// Posição inicial: próxima à base com pequena variação
+		dx := (rand.Float64() - 0.5) * 10
+		dy := (rand.Float64() - 0.5) * 10
 		d := &DroneLocal{
 			info: models.InfoDrone{
-				DroneID:   droneID,
-				BaseID:    id,
-				Estado:    models.DroneDisponivel,
-				Bateria:   70 + rand.Intn(31),
-				UltimaVez: time.Now(),
+				DroneID:          droneID,
+				BaseID:           id,
+				Estado:           models.DroneDisponivel,
+				Bateria:          70 + rand.Intn(31),
+				Posicao:          models.Coordenada{X: pos.X + dx, Y: pos.Y + dy},
+				UltimaVez:        time.Now(),
+				DisponiveisDesde: time.Now(),
 			},
 		}
 		b.drones[droneID] = d
-		b.logger.Printf("Drone registrado: %s (bateria=%d%%)", droneID, d.info.Bateria)
+		b.logger.Printf("Drone %s criado (bateria=%d%% pos=(%.1f,%.1f))",
+			droneID, d.info.Bateria, d.info.Posicao.X, d.info.Posicao.Y)
 	}
 	return b
 }
@@ -84,29 +86,30 @@ func novaBase(id, setorID string, brokerAddrs []string, numDrones int) *Base {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 func main() {
-	id       := flag.String("id",      "",              "ID da base (ex: Base_Norte)")
-	setor    := flag.String("setor",   "",              "ID do setor (ex: Setor_Norte)")
-	brokers  := flag.String("brokers", "localhost:6000","Endereços TCP dos brokers, em ordem de prioridade (vírgula)")
-	ndrones  := flag.Int("drones",     3,               "Número de drones nesta base")
+	id      := flag.String("id",      "",              "ID da base (ex: Base_Norte)")
+	setor   := flag.String("setor",   "",              "ID do setor")
+	brokers := flag.String("brokers", "localhost:6000","Endereços TCP dos brokers (vírgula, ordem de prioridade)")
+	ndrones := flag.Int("drones",     3,               "Número de drones iniciais")
+	posX    := flag.Float64("x",      0,               "Posição X da base")
+	posY    := flag.Float64("y",      0,               "Posição Y da base")
 	flag.Parse()
 
 	if *id == "" || *setor == "" {
-		fmt.Fprintln(os.Stderr, "Uso: base -id Base_Norte -setor Setor_Norte -brokers IP1:6000,IP2:6000 [-drones 3]")
+		fmt.Fprintln(os.Stderr, "Uso: base -id Base_Norte -setor Setor_Norte -brokers IP:6000,IP:6000 [-drones 3] [-x 100] [-y 200]")
 		os.Exit(1)
 	}
 
 	addrs := splitCSV(*brokers)
 	if len(addrs) == 0 {
-		fmt.Fprintln(os.Stderr, "Informe pelo menos um endereço de broker em -brokers")
+		fmt.Fprintln(os.Stderr, "Informe pelo menos um endereço de broker")
 		os.Exit(1)
 	}
 
-	base := novaBase(*id, *setor, addrs, *ndrones)
+	pos := models.Coordenada{X: *posX, Y: *posY}
+	base := novaBase(*id, *setor, pos, addrs, *ndrones)
 
-	// Goroutine de recarga de bateria em background
 	go base.loopRecarga()
-
-	// Loop principal: conecta ao broker (com fallback) e processa comandos
+	go base.loopDroneKeepalive()
 	base.loopConexao()
 }
 
@@ -114,7 +117,7 @@ func main() {
 
 func (b *Base) loopConexao() {
 	backoff := 2 * time.Second
-	idx := 0 // índice do broker atual na lista de fallback
+	idx := 0
 
 	for {
 		addr := b.brokerAddrs[idx%len(b.brokerAddrs)]
@@ -122,8 +125,8 @@ func (b *Base) loopConexao() {
 
 		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 		if err != nil {
-			b.logger.Printf("Falha ao conectar em %s: %v", addr, err)
-			idx++ // tenta próximo broker da lista
+			b.logger.Printf("Falha em %s: %v — próximo em %s", addr, err, backoff)
+			idx++
 			time.Sleep(backoff)
 			if backoff < 30*time.Second {
 				backoff *= 2
@@ -132,14 +135,13 @@ func (b *Base) loopConexao() {
 		}
 
 		b.logger.Printf("Conectada ao broker %s", addr)
-		backoff = 2 * time.Second // reseta backoff após sucesso
+		backoff = 2 * time.Second
 
 		b.connMu.Lock()
 		b.conn = conn
 		b.encoder = json.NewEncoder(conn)
 		b.connMu.Unlock()
 
-		// Envia registro com lista completa de drones
 		if err := b.enviarRegistro(); err != nil {
 			b.logger.Printf("Erro ao registrar: %v", err)
 			conn.Close()
@@ -147,41 +149,33 @@ func (b *Base) loopConexao() {
 			continue
 		}
 
-		// Keepalive em background
 		stopKA := make(chan struct{})
 		go b.loopKeepalive(conn, stopKA)
-
-		// Lê e processa comandos do broker
 		b.processarComandos(conn)
-
 		close(stopKA)
-		conn.Close()
 
+		conn.Close()
 		b.connMu.Lock()
 		b.conn = nil
 		b.encoder = nil
 		b.connMu.Unlock()
 
-		b.logger.Printf("Conexão com broker encerrada — tentando próximo...")
-		idx++ // tenta próximo broker na reconexão
+		b.logger.Printf("Conexão encerrada — tentando próximo broker...")
+		idx++
 		time.Sleep(backoff)
 	}
 }
 
 func (b *Base) enviarRegistro() error {
 	b.dronesMu.RLock()
-	drones := make([]models.InfoDrone, 0, len(b.drones))
-	for _, d := range b.drones {
-		d.mu.Lock()
-		drones = append(drones, d.info)
-		d.mu.Unlock()
-	}
+	drones := b.listaDrones()
 	b.dronesMu.RUnlock()
 
 	msg := models.MensagemBase{
 		Tipo:      models.BaseRegistro,
 		BaseID:    b.id,
 		SetorID:   b.setorID,
+		Posicao:   b.posicao,
 		Drones:    drones,
 		Timestamp: time.Now(),
 	}
@@ -199,20 +193,14 @@ func (b *Base) loopKeepalive(conn net.Conn, stop <-chan struct{}) {
 	for {
 		select {
 		case <-ticker.C:
-			// Envia status atualizado dos drones como keepalive
 			b.dronesMu.RLock()
-			drones := make([]models.InfoDrone, 0, len(b.drones))
-			for _, d := range b.drones {
-				d.mu.Lock()
-				drones = append(drones, d.info)
-				d.mu.Unlock()
-			}
+			drones := b.listaDrones()
 			b.dronesMu.RUnlock()
-
 			msg := models.MensagemBase{
 				Tipo:      models.BaseStatusDrones,
 				BaseID:    b.id,
 				SetorID:   b.setorID,
+				Posicao:   b.posicao,
 				Drones:    drones,
 				Timestamp: time.Now(),
 			}
@@ -226,14 +214,13 @@ func (b *Base) loopKeepalive(conn net.Conn, stop <-chan struct{}) {
 	}
 }
 
-// ── Processamento de comandos do broker ───────────────────────────────────────
+// ── Comandos do broker ────────────────────────────────────────────────────────
 
 func (b *Base) processarComandos(conn net.Conn) {
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
 		var cmd models.ComandoBase
 		if err := json.Unmarshal(scanner.Bytes(), &cmd); err != nil {
-			b.logger.Printf("Comando inválido: %v", err)
 			continue
 		}
 		go b.executarComando(cmd)
@@ -242,52 +229,78 @@ func (b *Base) processarComandos(conn net.Conn) {
 
 func (b *Base) executarComando(cmd models.ComandoBase) {
 	switch cmd.Tipo {
-
 	case models.CmdDespacharDrone:
-		b.despacharDrone(cmd.DroneID, cmd.OcorrenciaID, cmd.SetorDestino)
-
+		b.despacharDrone(cmd.DroneID, cmd.OcorrenciaID, cmd.SetorDestino, cmd.PosicaoAlvo)
 	case models.CmdRetornarDrone:
 		b.retornarDrone(cmd.DroneID)
+	case models.CmdReceberDrones:
+		b.absorverDrones(cmd.DronesParaAbsorver)
+	}
+}
+
+// ── Absorção de drones realocados ─────────────────────────────────────────────
+
+func (b *Base) absorverDrones(drones []models.InfoDrone) {
+	b.dronesMu.Lock()
+	for _, d := range drones {
+		d.BaseID = b.id
+		d.Estado = models.DroneDisponivel
+		d.UltimaVez = time.Now()
+		d.DisponiveisDesde = time.Now()
+		d.Posicao = models.Coordenada{
+			X: b.posicao.X + (rand.Float64()-0.5)*10,
+			Y: b.posicao.Y + (rand.Float64()-0.5)*10,
+		}
+		b.drones[d.DroneID] = &DroneLocal{info: d}
+		b.logger.Printf("Drone %s absorvido por realocação (bateria=%d%%)", d.DroneID, d.Bateria)
+	}
+	b.dronesMu.Unlock()
+
+	// Notifica o broker do novo estado de cada drone absorvido
+	for _, d := range drones {
+		b.notificarEstado(d.DroneID, "", models.DroneDisponivel)
 	}
 }
 
 // ── Lógica dos drones ─────────────────────────────────────────────────────────
 
-func (b *Base) despacharDrone(droneID, ocorrenciaID, setorDestino string) {
+func (b *Base) despacharDrone(droneID, ocorrenciaID, setorDestino string, alvo models.Coordenada) {
 	b.dronesMu.RLock()
 	d, ok := b.drones[droneID]
 	b.dronesMu.RUnlock()
 
 	if !ok {
-		b.logger.Printf("Drone %s não encontrado nesta base", droneID)
+		b.logger.Printf("Drone %s não encontrado", droneID)
 		return
 	}
 
 	d.mu.Lock()
 	if !d.info.Disponivel() {
 		d.mu.Unlock()
-		b.logger.Printf("Drone %s indisponível (estado=%s bateria=%d%%)", droneID, d.info.Estado, d.info.Bateria)
+		b.logger.Printf("Drone %s indisponível (estado=%s bateria=%d%%)",
+			droneID, d.info.Estado, d.info.Bateria)
 		return
 	}
 	d.info.Estado = models.DroneDespachado
 	d.info.OcorrenciaID = ocorrenciaID
 	d.info.UltimaVez = time.Now()
+	d.info.DisponiveisDesde = time.Time{}
 	d.ocupado = true
 	d.mu.Unlock()
 
-	b.logger.Printf("Drone %s despachado → %s (ocorrência: %s)", droneID, setorDestino, ocorrenciaID)
+	b.logger.Printf("Drone %s despachado → %s (ocorrência: %s alvo=(%.0f,%.0f))",
+		droneID, setorDestino, ocorrenciaID, alvo.X, alvo.Y)
 	b.notificarEstado(droneID, ocorrenciaID, models.DroneDespachado)
 
-	// Simula a missão em goroutine
-	go b.simularMissao(d, ocorrenciaID)
+	go b.simularMissao(d, ocorrenciaID, alvo)
 }
 
-func (b *Base) simularMissao(d *DroneLocal, ocorrenciaID string) {
-	// Fase 1: deslocamento até o local (aleatório entre 2-5s)
+func (b *Base) simularMissao(d *DroneLocal, ocorrenciaID string, alvo models.Coordenada) {
+	// Deslocamento até o local
 	time.Sleep(2*time.Second + time.Duration(rand.Intn(3))*time.Second)
 
 	d.mu.Lock()
-	// Chance de 5% de o drone ser abatido durante a missão
+	// 5% de chance de ser abatido
 	if rand.Float32() < 0.05 {
 		d.info.Estado = models.DroneAbatido
 		d.info.UltimaVez = time.Now()
@@ -297,17 +310,19 @@ func (b *Base) simularMissao(d *DroneLocal, ocorrenciaID string) {
 		b.notificarEstado(d.info.DroneID, ocorrenciaID, models.DroneAbatido)
 		return
 	}
+	// Move posição para o alvo
+	d.info.Posicao = alvo
 	d.info.Estado = models.DroneEmMissao
 	d.info.UltimaVez = time.Now()
 	d.mu.Unlock()
 	b.notificarEstado(d.info.DroneID, ocorrenciaID, models.DroneEmMissao)
 
-	// Fase 2: execução da missão
+	// Executa a missão
 	duracao := missaoDurMin + time.Duration(rand.Int63n(int64(missaoDurMax-missaoDurMin)))
 	b.logger.Printf("Drone %s em missão (%s)...", d.info.DroneID, duracao.Round(time.Second))
 	time.Sleep(duracao)
 
-	// Fase 3: retorno
+	// Retorno à base
 	d.mu.Lock()
 	d.info.Estado = models.DroneRetornando
 	d.info.Bateria -= bateriaConsumo
@@ -315,30 +330,36 @@ func (b *Base) simularMissao(d *DroneLocal, ocorrenciaID string) {
 		d.info.Bateria = 0
 	}
 	d.info.UltimaVez = time.Now()
+	ocID := d.info.OcorrenciaID
 	d.mu.Unlock()
-	b.notificarEstado(d.info.DroneID, ocorrenciaID, models.DroneRetornando)
+	b.notificarEstado(d.info.DroneID, ocID, models.DroneRetornando)
 
 	b.logger.Printf("Drone %s retornando (bateria=%d%%)...", d.info.DroneID, d.info.Bateria)
 	time.Sleep(retornoDur)
 
-	// Fase 4: disponível novamente (ou sem bateria)
+	// Move posição de volta à base
 	d.mu.Lock()
+	d.info.Posicao = models.Coordenada{
+		X: b.posicao.X + (rand.Float64()-0.5)*10,
+		Y: b.posicao.Y + (rand.Float64()-0.5)*10,
+	}
 	if d.info.Bateria <= 10 {
 		d.info.Estado = models.DroneSemBateria
 		d.ocupado = false
 		d.mu.Unlock()
-		b.logger.Printf("Drone %s SEM BATERIA após missão", d.info.DroneID)
+		b.logger.Printf("Drone %s SEM BATERIA", d.info.DroneID)
 		b.notificarEstado(d.info.DroneID, "", models.DroneSemBateria)
 		return
 	}
 	d.info.Estado = models.DroneDisponivel
 	d.info.OcorrenciaID = ""
+	d.info.DisponiveisDesde = time.Now()
 	d.ocupado = false
 	d.info.UltimaVez = time.Now()
 	d.mu.Unlock()
 
 	b.logger.Printf("Drone %s disponível (bateria=%d%%)", d.info.DroneID, d.info.Bateria)
-	b.notificarEstado(d.info.DroneID, "", models.DroneDisponivel)
+	b.notificarEstado(d.info.DroneID, ocID, models.DroneDisponivel)
 }
 
 func (b *Base) retornarDrone(droneID string) {
@@ -350,9 +371,9 @@ func (b *Base) retornarDrone(droneID string) {
 	}
 	d.mu.Lock()
 	if d.info.Estado == models.DroneEmMissao || d.info.Estado == models.DroneDespachado {
+		ocID := d.info.OcorrenciaID
 		d.info.Estado = models.DroneRetornando
 		d.info.UltimaVez = time.Now()
-		ocID := d.info.OcorrenciaID
 		d.mu.Unlock()
 		b.notificarEstado(droneID, ocID, models.DroneRetornando)
 		b.logger.Printf("Drone %s retornando por ordem do broker", droneID)
@@ -361,9 +382,66 @@ func (b *Base) retornarDrone(droneID string) {
 	}
 }
 
-// ── Notificação de estado ao broker ──────────────────────────────────────────
+// ── Sinal de vida do drone (keepalive individual) ─────────────────────────────
+
+func (b *Base) loopDroneKeepalive() {
+	ticker := time.NewTicker(droneKAIntv)
+	defer ticker.Stop()
+	for range ticker.C {
+		b.dronesMu.RLock()
+		for _, d := range b.drones {
+			d.mu.Lock()
+			d.info.UltimaVez = time.Now()
+			d.mu.Unlock()
+		}
+		b.dronesMu.RUnlock()
+		// O status geral já é enviado pelo loopKeepalive da base
+		// Este loop apenas mantém UltimaVez atualizado internamente
+	}
+}
+
+// ── Recarga de bateria ────────────────────────────────────────────────────────
+
+func (b *Base) loopRecarga() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		b.dronesMu.RLock()
+		for _, d := range b.drones {
+			d.mu.Lock()
+			if d.info.Estado == models.DroneDisponivel || d.info.Estado == models.DroneSemBateria {
+				if d.info.Bateria < 100 {
+					d.info.Bateria += bateriaRecarga
+					if d.info.Bateria > 100 {
+						d.info.Bateria = 100
+					}
+				}
+				if d.info.Estado == models.DroneSemBateria && d.info.Bateria > 30 {
+					d.info.Estado = models.DroneDisponivel
+					d.info.DisponiveisDesde = time.Now()
+					d.info.UltimaVez = time.Now()
+					b.logger.Printf("Drone %s recarregado (bateria=%d%%)", d.info.DroneID, d.info.Bateria)
+					go b.notificarEstado(d.info.DroneID, "", models.DroneDisponivel)
+				}
+			}
+			d.mu.Unlock()
+		}
+		b.dronesMu.RUnlock()
+	}
+}
+
+// ── Notificação de estado ─────────────────────────────────────────────────────
 
 func (b *Base) notificarEstado(droneID, ocorrenciaID string, estado models.EstadoDrone) {
+	b.dronesMu.RLock()
+	var pos models.Coordenada
+	if d, ok := b.drones[droneID]; ok {
+		d.mu.Lock()
+		pos = d.info.Posicao
+		d.mu.Unlock()
+	}
+	b.dronesMu.RUnlock()
+
 	msg := models.MensagemBase{
 		Tipo:         models.BaseDroneEstado,
 		BaseID:       b.id,
@@ -371,6 +449,7 @@ func (b *Base) notificarEstado(droneID, ocorrenciaID string, estado models.Estad
 		DroneID:      droneID,
 		NovoEstado:   estado,
 		OcorrenciaID: ocorrenciaID,
+		Posicao2:     pos,
 		Timestamp:    time.Now(),
 	}
 	b.connMu.Lock()
@@ -384,55 +463,33 @@ func (b *Base) notificarEstado(droneID, ocorrenciaID string, estado models.Estad
 	}
 }
 
-// ── Recarga de bateria ────────────────────────────────────────────────────────
-
-func (b *Base) loopRecarga() {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		b.dronesMu.RLock()
-		for _, d := range b.drones {
-			d.mu.Lock()
-			// Só recarrega drones parados na base
-			if d.info.Estado == models.DroneDisponivel || d.info.Estado == models.DroneSemBateria {
-				if d.info.Bateria < 100 {
-					d.info.Bateria += bateriaRecarga
-					if d.info.Bateria > 100 {
-						d.info.Bateria = 100
-					}
-				}
-				// Reativa drone sem bateria quando recarregar o suficiente
-				if d.info.Estado == models.DroneSemBateria && d.info.Bateria > 30 {
-					d.info.Estado = models.DroneDisponivel
-					d.info.UltimaVez = time.Now()
-					b.logger.Printf("Drone %s recarregado e disponível (bateria=%d%%)", d.info.DroneID, d.info.Bateria)
-					// Notifica broker fora do lock
-					go b.notificarEstado(d.info.DroneID, "", models.DroneDisponivel)
-				}
-			}
-			d.mu.Unlock()
-		}
-		b.dronesMu.RUnlock()
-	}
-}
-
 // ── Utilitários ───────────────────────────────────────────────────────────────
 
+func (b *Base) listaDrones() []models.InfoDrone {
+	lista := make([]models.InfoDrone, 0, len(b.drones))
+	for _, d := range b.drones {
+		d.mu.Lock()
+		lista = append(lista, d.info)
+		d.mu.Unlock()
+	}
+	return lista
+}
+
 func splitCSV(s string) []string {
-	var resultado []string
-	atual := ""
+	var res []string
+	cur := ""
 	for _, c := range s {
 		if c == ',' {
-			if atual != "" {
-				resultado = append(resultado, atual)
-				atual = ""
+			if cur != "" {
+				res = append(res, cur)
+				cur = ""
 			}
 		} else {
-			atual += string(c)
+			cur += string(c)
 		}
 	}
-	if atual != "" {
-		resultado = append(resultado, atual)
+	if cur != "" {
+		res = append(res, cur)
 	}
-	return resultado
+	return res
 }
