@@ -33,10 +33,13 @@ type heapInterno []*item
 
 func (h heapInterno) Len() int { return len(h) }
 
-// Less: maior prioridade sai primeiro; empate por timestamp mais antigo.
+// Less: maior prioridade sai primeiro; empate por menor tempo de Lamport; empate secundário por timestamp.
 func (h heapInterno) Less(i, j int) bool {
 	if h[i].prioridade != h[j].prioridade {
-		return h[i].prioridade > h[j].prioridade
+		return h[i].prioridade > h[j].prioridade // Maior prioridade primeiro
+	}
+	if h[i].ocorrencia.LamportTime != h[j].ocorrencia.LamportTime {
+		return h[i].ocorrencia.LamportTime < h[j].ocorrencia.LamportTime // Menor tempo de Lamport primeiro
 	}
 	return h[i].criadadEm.Before(h[j].criadadEm)
 }
@@ -178,8 +181,8 @@ func (fp *FilaPrioridade) Envelhecer() {
 		espera := agora.Sub(it.criadadEm)
 		nivelExtra := int(espera / intervaloEnvelhecimento)
 		novaPrioridade := int(it.ocorrencia.Criticidade) + nivelExtra
-		if novaPrioridade > 5 {
-			novaPrioridade = 5
+		if novaPrioridade > int(models.CriticidadeAlta) {
+			novaPrioridade = int(models.CriticidadeAlta)
 		}
 		if novaPrioridade != it.prioridade {
 			it.prioridade = novaPrioridade

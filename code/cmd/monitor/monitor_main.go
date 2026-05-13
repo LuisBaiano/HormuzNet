@@ -288,7 +288,7 @@ func processarMensagem(msg models.MensagemBroker, addr string) {
 		}
 		estadoMu.Unlock()
 		addEvento("PERDA",
-			fmt.Sprintf("Drone %s PERDIDO — %s (base %s)", msg.DroneID, msg.Motivo, msg.BaseID), "danger")
+			fmt.Sprintf("Drone %s PERDIDO — %s", msg.DroneID, msg.Motivo), "danger")
 
 	case models.MsgDroneLiberado:
 		estadoMu.Lock()
@@ -297,16 +297,12 @@ func processarMensagem(msg models.MensagemBroker, addr string) {
 			drones[msg.DroneID] = d
 		}
 		estadoMu.Unlock()
-		addEvento("LIBERADO", fmt.Sprintf("Drone %s disponível (base %s)", msg.DroneID, msg.BaseID), "info")
+		addEvento("LIBERADO", fmt.Sprintf("Drone %s disponível", msg.DroneID), "info")
 
 	case models.MsgMissaoConcluida:
 		addEvento("MISSAO",
 			fmt.Sprintf("Missão concluída: drone %s liberou %s", msg.DroneID, msg.OcorrenciaID), "info")
 
-	case models.MsgRealocacaoDrones:
-		addEvento("REALOC",
-			fmt.Sprintf("%d drones realocados de base destruída (broker %s)",
-				len(msg.DronesOrfaos), msg.BrokerID), "danger")
 
 	case models.MsgRequisicaoDrone:
 		if msg.Ocorrencia != nil {
@@ -386,6 +382,7 @@ func main() {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, dashboardHTML)
 	})
+	http.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir("./assets"))))
 	http.HandleFunc("/ws", handleWS)
 	http.HandleFunc("/api/estado", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -545,7 +542,10 @@ header::after {
 .panel-body::-webkit-scrollbar-thumb { background: var(--border); }
 
 /* ── MAPA ── */
-.map-wrap { flex: 1; position: relative; overflow: hidden; }
+.map-wrap { 
+  flex: 1; position: relative; overflow: hidden; 
+  background: url('/assets/map.png') center center / cover no-repeat;
+}
 canvas#mapa {
   width: 100%; height: 100%;
   display: block;
@@ -718,7 +718,6 @@ body::before {
         <div class="leg"><div class="leg-dot" style="background:var(--blue)"></div>EM MISSÃO</div>
         <div class="leg"><div class="leg-dot" style="background:var(--textdim)"></div>RETORNANDO</div>
         <div class="leg"><div class="leg-dot" style="background:var(--red)"></div>PERDIDO</div>
-        <div class="leg"><div class="leg-dot" style="background:#fff;opacity:.6;border-radius:2px"></div>BASE</div>
       </div>
     </div>
   </div>
@@ -790,8 +789,6 @@ function renderDrones() {
   if (!dlist.length) return;
 
   cont.innerHTML = dlist.map(d => {
-    const bat = d.bateria || 0;
-    const batColor = bat > 50 ? '#00e87a' : bat > 20 ? '#ffb800' : '#ff3b3b';
     const oc = d.ocorrencia_id ? '<span style="color:var(--blue)">▶ ' + d.ocorrencia_id.slice(-12) + '</span>' : '';
     const pos = d.posicao ? '(' + Math.round(d.posicao.x) + ',' + Math.round(d.posicao.y) + ')' : '--';
     return '<div class="drone-card ' + d.estado + '">'
@@ -800,12 +797,9 @@ function renderDrones() {
       +   '<span class="dc-est ' + d.estado + '">' + d.estado + '</span>'
       + '</div>'
       + '<div class="dc-info">'
-      +   '<span>🔋 ' + bat + '%</span>'
       +   '<span>📍 ' + pos + '</span>'
-      +   '<span>🏠 ' + (d.base_id || '--') + '</span>'
       + '</div>'
       + (oc ? '<div style="margin-top:3px;font-size:.62rem">' + oc + '</div>' : '')
-      + '<div class="bat-bar"><div class="bat-fill" style="width:' + bat + '%;background:' + batColor + '"></div></div>'
       + '</div>';
   }).join('');
 }
@@ -849,9 +843,8 @@ function renderMapa() {
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
 
-  // Fundo
-  ctx.fillStyle = '#070b12';
-  ctx.fillRect(0, 0, W, H);
+  // Limpa o fundo para mostrar a imagem
+  ctx.clearRect(0, 0, W, H);
 
   // Grade
   ctx.strokeStyle = 'rgba(26,48,64,.5)';
@@ -865,6 +858,24 @@ function renderMapa() {
   ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(W/2,0); ctx.lineTo(W/2,H); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(0,H/2); ctx.lineTo(W,H/2); ctx.stroke();
+
+  // Zonas dos Brokers
+  const drawSec = (c, x, y) => {
+    ctx.fillStyle = c; ctx.fillRect(x, y, W/2, H/2);
+    ctx.strokeStyle = c.replace('0.15', '0.5'); ctx.strokeRect(x, y, W/2, H/2);
+  };
+  drawSec('rgba(0, 232, 122, 0.15)', 0, 0); // NW
+  drawSec('rgba(0, 194, 255, 0.15)', W/2, 0); // NE
+  drawSec('rgba(255, 184, 0, 0.15)', 0, H/2); // SW
+  drawSec('rgba(255, 59, 59, 0.15)', W/2, H/2); // SE
+
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.font = 'bold 16px Orbitron';
+  ctx.textAlign = 'center';
+  ctx.fillText('B1: SETOR NOROESTE', W/4, H/4);
+  ctx.fillText('B2: SETOR NORDESTE', W*0.75, H/4);
+  ctx.fillText('B3: SETOR SUDOESTE', W/4, H*0.75);
+  ctx.fillText('B4: SETOR SUDESTE', W*0.75, H*0.75);
 
   const dlist = Object.values(estado.drones || {});
   if (!dlist.length) {
@@ -888,27 +899,7 @@ function renderMapa() {
 
   const toScreen = (x, y) => ({ sx: x * scale + offX, sy: H - (y * scale + offY) });
 
-  // Bases (quadrados brancos)
-  const basesVistas = new Set();
-  dlist.forEach(d => {
-    if (!d.posicao || basesVistas.has(d.base_id)) return;
-    // Posição estimada da base = média dos drones disponíveis da mesma base
-    const mesmaBase = dlist.filter(x => x.base_id === d.base_id && x.posicao);
-    if (!mesmaBase.length) return;
-    const bx = mesmaBase.reduce((s,x)=>s+x.posicao.x,0)/mesmaBase.length;
-    const by = mesmaBase.reduce((s,x)=>s+x.posicao.y,0)/mesmaBase.length;
-    const {sx, sy} = toScreen(bx, by);
-    ctx.fillStyle = 'rgba(255,255,255,.15)';
-    ctx.strokeStyle = 'rgba(255,255,255,.4)';
-    ctx.lineWidth = 1;
-    ctx.fillRect(sx-10, sy-10, 20, 20);
-    ctx.strokeRect(sx-10, sy-10, 20, 20);
-    ctx.fillStyle = 'rgba(255,255,255,.6)';
-    ctx.font = '9px Share Tech Mono';
-    ctx.textAlign = 'center';
-    ctx.fillText(d.base_id || '', sx, sy-14);
-    basesVistas.add(d.base_id);
-  });
+
 
   // Drones
   dlist.forEach(d => {

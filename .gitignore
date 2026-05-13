@@ -1,1 +1,17 @@
-go.mod
+# Binaries
+*_exec
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Logs
+logs/
+*.log
+
+# Docker/OS
+.DS_Store
+.env

@@ -7,25 +7,16 @@ import "time"
 type Criticidade int
 
 const (
-	CriticidadeBaixa   Criticidade = 1
-	CriticidadeMedia   Criticidade = 2
-	CriticidadeAlta    Criticidade = 3
-	CriticidadeCritica Criticidade = 4
-	CriticidadeMaxima  Criticidade = 5
+	CriticidadeBaixa Criticidade = 1
+	CriticidadeAlta  Criticidade = 2
 )
 
 func (c Criticidade) String() string {
 	switch c {
 	case CriticidadeBaixa:
 		return "BAIXA"
-	case CriticidadeMedia:
-		return "MEDIA"
 	case CriticidadeAlta:
 		return "ALTA"
-	case CriticidadeCritica:
-		return "CRITICA"
-	case CriticidadeMaxima:
-		return "MAXIMA"
 	default:
 		return "DESCONHECIDA"
 	}
@@ -57,7 +48,6 @@ const (
 	DroneRetornando EstadoDrone = "RETORNANDO"
 	DroneAbatido    EstadoDrone = "ABATIDO"
 	DroneSemBateria EstadoDrone = "SEM_BATERIA"
-	DroneRealocando EstadoDrone = "REALOCANDO" // base destruída, aguardando nova base
 )
 
 // ── Sensor → Broker (UDP) ─────────────────────────────────────────────────────
@@ -66,6 +56,7 @@ type LeituraSensor struct {
 	SensorID    string      `json:"sensor_id"`
 	SetorID     string      `json:"setor_id"`
 	Tipo        string      `json:"tipo"`
+	Posicao     Coordenada  `json:"posicao"` // coordenada do sensor
 	Valor       float64     `json:"valor"`
 	Unidade     string      `json:"unidade"`
 	Criticidade Criticidade `json:"criticidade"`
@@ -83,6 +74,7 @@ type Ocorrencia struct {
 	Criticidade  Criticidade `json:"criticidade"`
 	Posicao      Coordenada  `json:"posicao"`      // localização do evento
 	Timestamp    time.Time   `json:"timestamp"`
+	LamportTime  int         `json:"lamport_time"` // Relógio de Lamport
 	Atendida     bool        `json:"atendida"`
 	DroneID      string      `json:"drone_id,omitempty"`
 }
@@ -91,12 +83,11 @@ type Ocorrencia struct {
 
 type InfoDrone struct {
 	DroneID      string      `json:"drone_id"`
-	BaseID       string      `json:"base_id"`       // base atual (pode mudar por realocação)
-	BrokerID     string      `json:"broker_id"`     // broker responsável pelo drone
+	BrokerID     string      `json:"broker_id"` // broker responsável atual
 	Estado       EstadoDrone `json:"estado"`
 	OcorrenciaID string      `json:"ocorrencia_id,omitempty"`
-	Bateria      int         `json:"bateria"`       // 0-100 %
-	Posicao      Coordenada  `json:"posicao"`       // posição atual
+	Bateria      int         `json:"bateria"` // 0-100 %
+	Posicao      Coordenada  `json:"posicao"` // posição atual
 	UltimaVez    time.Time   `json:"ultima_vez"`
 	// Controle de ociosidade: instante em que ficou disponível pela última vez
 	DisponiveisDesde time.Time `json:"disponivel_desde,omitempty"`
@@ -121,81 +112,62 @@ const (
 	MsgReplicaFila     TipoMensagemBroker = "REPLICA_FILA"
 
 	// Sincronização global de drones entre brokers
-	// Enviado sempre que um drone muda de estado em qualquer broker
 	MsgSincDrone TipoMensagemBroker = "SINC_DRONE"
 
-	// Realocação: base destruída → drones migram para outra base
-	MsgRealocacaoDrones TipoMensagemBroker = "REALOCACAO_DRONES"
-
-	// Notificação de missão concluída (drone terminou serviço)
+	// Notificação de missão concluída
 	MsgMissaoConcluida TipoMensagemBroker = "MISSAO_CONCLUIDA"
 )
 
 type MensagemBroker struct {
-	Tipo      TipoMensagemBroker `json:"tipo"`
-	BrokerID  string             `json:"broker_id"`
-	Timestamp time.Time          `json:"timestamp"`
+	Tipo        TipoMensagemBroker `json:"tipo"`
+	BrokerID    string             `json:"broker_id"`
+	Timestamp   time.Time          `json:"timestamp"`
+	LamportTime int                `json:"lamport_time"` // Relógio de Lamport
 
-	Ocorrencia   *Ocorrencia  `json:"ocorrencia,omitempty"`
-	DroneID      string       `json:"drone_id,omitempty"`
-	BaseID       string       `json:"base_id,omitempty"`
-	OcorrenciaID string       `json:"ocorrencia_id,omitempty"`
-	Motivo       string       `json:"motivo,omitempty"`
+	Ocorrencia   *Ocorrencia `json:"ocorrencia,omitempty"`
+	DroneID      string      `json:"drone_id,omitempty"`
+	OcorrenciaID string      `json:"ocorrencia_id,omitempty"`
+	Motivo       string      `json:"motivo,omitempty"`
 
 	// SINC_DRONE: estado atualizado de um drone
 	Drone *InfoDrone `json:"drone,omitempty"`
-
-	// REALOCACAO_DRONES: lista de drones órfãos após base destruída
-	DronesOrfaos []InfoDrone `json:"drones_orfaos,omitempty"`
 
 	// REPLICA_FILA: snapshot de ocorrências pendentes
 	FilaPendente []Ocorrencia `json:"fila_pendente,omitempty"`
 }
 
-// ── Mensagens base→broker (TCP) ───────────────────────────────────────────────
+// ── Mensagens Drone↔Broker (TCP) ──────────────────────────────────────────────
 
-type TipoMensagemBase string
+type TipoMensagemDrone string
 
 const (
-	BaseRegistro     TipoMensagemBase = "REGISTRO_BASE"
-	BaseStatusDrones TipoMensagemBase = "STATUS_DRONES"
-	BaseDroneEstado  TipoMensagemBase = "DRONE_ESTADO"
-	// Base aceita drones realocados de outra base destruída
-	BaseAceitarDrones TipoMensagemBase = "ACEITAR_DRONES"
+	DroneRegistro TipoMensagemDrone = "REGISTRO_DRONE"
+	DroneKeepalive TipoMensagemDrone = "KEEPALIVE_DRONE"
+	DroneEstado   TipoMensagemDrone = "DRONE_ESTADO"
 )
 
-type MensagemBase struct {
-	Tipo      TipoMensagemBase `json:"tipo"`
-	BaseID    string           `json:"base_id"`
-	SetorID   string           `json:"setor_id"`
-	Posicao   Coordenada       `json:"posicao"`
-	Timestamp time.Time        `json:"timestamp"`
-
-	Drones       []InfoDrone `json:"drones,omitempty"`
-	DroneID      string      `json:"drone_id,omitempty"`
-	NovoEstado   EstadoDrone `json:"novo_estado,omitempty"`
-	OcorrenciaID string      `json:"ocorrencia_id,omitempty"`
-	Posicao2     Coordenada  `json:"posicao_drone,omitempty"` // posição atual do drone
+type MensagemDrone struct {
+	Tipo         TipoMensagemDrone `json:"tipo"`
+	DroneID      string            `json:"drone_id"`
+	Timestamp    time.Time         `json:"timestamp"`
+	DroneInfo    *InfoDrone        `json:"drone_info,omitempty"`
+	NovoEstado   EstadoDrone       `json:"novo_estado,omitempty"`
+	OcorrenciaID string            `json:"ocorrencia_id,omitempty"`
+	Posicao      Coordenada        `json:"posicao,omitempty"`
+	Bateria      int               `json:"bateria,omitempty"`
 }
 
-// ── Comandos broker→base (TCP) ────────────────────────────────────────────────
-
-type TipoComandoBase string
+type TipoComandoDrone string
 
 const (
-	CmdDespacharDrone  TipoComandoBase = "DESPACHAR_DRONE"
-	CmdRetornarDrone   TipoComandoBase = "RETORNAR_DRONE"
-	// Broker ordena base a absorver drones realocados
-	CmdReceberDrones   TipoComandoBase = "RECEBER_DRONES"
+	CmdDespacharDrone TipoComandoDrone = "DESPACHAR_DRONE"
+	CmdRetornarDrone  TipoComandoDrone = "RETORNAR_DRONE"
 )
 
-type ComandoBase struct {
-	Tipo         TipoComandoBase `json:"tipo"`
-	DroneID      string          `json:"drone_id,omitempty"`
-	OcorrenciaID string          `json:"ocorrencia_id,omitempty"`
-	SetorDestino string          `json:"setor_destino,omitempty"`
-	PosicaoAlvo  Coordenada      `json:"posicao_alvo,omitempty"`
-	Timestamp    time.Time       `json:"timestamp"`
-	// CmdReceberDrones: lista de drones para absorver
-	DronesParaAbsorver []InfoDrone `json:"drones_para_absorver,omitempty"`
+type ComandoDrone struct {
+	Tipo         TipoComandoDrone `json:"tipo"`
+	OcorrenciaID string           `json:"ocorrencia_id,omitempty"`
+	SetorDestino string           `json:"setor_destino,omitempty"`
+	PosicaoAlvo  Coordenada       `json:"posicao_alvo,omitempty"`
+	Timestamp    time.Time        `json:"timestamp"`
 }

@@ -3,7 +3,7 @@ WORKDIR /app
 COPY go.mod ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o base_exec ./cmd/base/
+RUN CGO_ENABLED=0 go build -o base_exec ./cmd/drone/
 
 FROM scratch
 COPY --from=builder /app/base_exec /base_exec

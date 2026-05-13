@@ -1,152 +1,387 @@
-# ═══════════════════════════════════════════════════════════════════════════════
-# HormuzNet — docker-compose.yml
-#
-# Topologia local para desenvolvimento e testes:
-#   2 brokers em malha TCP
-#   2 bases com 3 e 2 drones
-#   5 sensores (radar, sonar, boia, visual, meteo)
-#
-# Para topologia distribuída (máquinas separadas):
-#   Máquina A: docker compose up broker1 base1
-#   Máquina B: docker compose up broker2 base2
-#              (ajuste -vizinhos e -brokers para IP real da Máquina A)
-#   Máquina C: docker compose up sensor_radar sensor_sonar ...
-#              (ajuste -broker para IP real do Broker alvo)
-# ═══════════════════════════════════════════════════════════════════════════════
+version: '3.8'
 
 services:
-
-  # ── Broker 1 — Setor Norte ─────────────────────────────────────────────────
   broker1:
     build:
-      context: .
+      context: ./code
       dockerfile: Dockerfile.broker
     container_name: hormuznet_broker1
-    command:
-      - "-id=B1"
-      - "-setor=Setor_Norte"
-      - "-udp=0.0.0.0:8080"
-      - "-tcp=0.0.0.0:6000"
-      - "-vizinhos=broker2:6000"
-    ports:
-      - "8080:8080/udp"
-      - "6000:6000"
+    command: ["-id=B1","-setor=Setor_Noroeste","-udp=224.0.0.1:8080","-tcp=0.0.0.0:6000","-vizinhos=broker2:6001,broker3:6002"]
     networks:
       - hormuznet
     restart: on-failure
 
-  # ── Broker 2 — Setor Sul ────────────────────────────────────────────────────
   broker2:
     build:
-      context: .
+      context: ./code
       dockerfile: Dockerfile.broker
     container_name: hormuznet_broker2
-    command:
-      - "-id=B2"
-      - "-setor=Setor_Sul"
-      - "-udp=0.0.0.0:8080"
-      - "-tcp=0.0.0.0:6000"
-      - "-vizinhos=broker1:6000"
+    command: ["-id=B2","-setor=Setor_Nordeste","-udp=224.0.0.1:8080","-tcp=0.0.0.0:6001","-vizinhos=broker1:6000,broker4:6003"]
+    networks:
+      - hormuznet
+    restart: on-failure
+
+  broker3:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.broker
+    container_name: hormuznet_broker3
+    command: ["-id=B3","-setor=Setor_Sudoeste","-udp=224.0.0.1:8080","-tcp=0.0.0.0:6002","-vizinhos=broker1:6000,broker4:6003"]
+    networks:
+      - hormuznet
+    restart: on-failure
+
+  broker4:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.broker
+    container_name: hormuznet_broker4
+    command: ["-id=B4","-setor=Setor_Sudeste","-udp=224.0.0.1:8080","-tcp=0.0.0.0:6003","-vizinhos=broker2:6001,broker3:6002"]
+    networks:
+      - hormuznet
+    restart: on-failure
+
+  drone1:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.drone
+    container_name: hormuznet_drone_nw_1
+    command: ["-id=Drone_NW_1","-brokers=broker1:6000,broker2:6001","-x=250","-y=250"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+      - broker2
+      - broker3
+      - broker4
+
+  drone2:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.drone
+    container_name: hormuznet_drone_nw_2
+    command: ["-id=Drone_NW_2","-brokers=broker1:6000,broker3:6002","-x=300","-y=300"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+      - broker2
+      - broker3
+      - broker4
+
+  drone3:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.drone
+    container_name: hormuznet_drone_ne_1
+    command: ["-id=Drone_NE_1","-brokers=broker2:6001,broker1:6000","-x=750","-y=250"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+      - broker2
+      - broker3
+      - broker4
+
+  drone4:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.drone
+    container_name: hormuznet_drone_ne_2
+    command: ["-id=Drone_NE_2","-brokers=broker2:6001,broker4:6003","-x=800","-y=300"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+      - broker2
+      - broker3
+      - broker4
+
+  drone5:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.drone
+    container_name: hormuznet_drone_sw_1
+    command: ["-id=Drone_SW_1","-brokers=broker3:6002,broker1:6000","-x=250","-y=750"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+      - broker2
+      - broker3
+      - broker4
+
+  drone6:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.drone
+    container_name: hormuznet_drone_se_1
+    command: ["-id=Drone_SE_1","-brokers=broker4:6003,broker2:6001","-x=750","-y=750"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+      - broker2
+      - broker3
+      - broker4
+
+  monitor:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.monitor
+    container_name: hormuznet_monitor
+    command: ["-brokers=broker1:6000,broker2:6001,broker3:6002,broker4:6003", "-porta=8082"]
     ports:
-      - "8081:8080/udp"
-      - "6001:6000"
-    networks:
-      - hormuznet
-    restart: on-failure
-    depends_on:
-      - broker1
-
-  # ── Base 1 — fallback automático para Broker 2 se Broker 1 cair ────────────
-  base1:
-    build:
-      context: .
-      dockerfile: Dockerfile.base
-    container_name: hormuznet_base1
-    command:
-      - "-id=Base_Norte"
-      - "-setor=Setor_Norte"
-      - "-brokers=broker1:6000,broker2:6000"
-      - "-drones=3"
+      - "8082:8082"
     networks:
       - hormuznet
     restart: on-failure
     depends_on:
       - broker1
       - broker2
+      - broker3
+      - broker4
 
-  # ── Base 2 — fallback automático para Broker 1 se Broker 2 cair ────────────
-  base2:
+  sensor_1:
     build:
-      context: .
-      dockerfile: Dockerfile.base
-    container_name: hormuznet_base2
-    command:
-      - "-id=Base_Sul"
-      - "-setor=Setor_Sul"
-      - "-brokers=broker2:6000,broker1:6000"
-      - "-drones=2"
-    networks:
-      - hormuznet
-    restart: on-failure
-    depends_on:
-      - broker1
-      - broker2
-
-  # ── Sensores ────────────────────────────────────────────────────────────────
-  sensor_radar:
-    build:
-      context: .
+      context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_sensor_radar
-    command: ["-id=radar_norte_01","-tipo=radar","-setor=Setor_Norte","-broker=broker1:8080","-intervalo=1000"]
+    container_name: hormuznet_radar_nw_1
+    command: ["-id=radar_nw_1","-tipo=radar","-setor=Setor_Noroeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=286", "-y=100"]
     networks:
       - hormuznet
     restart: on-failure
     depends_on:
       - broker1
 
-  sensor_sonar:
+  sensor_2:
     build:
-      context: .
+      context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_sensor_sonar
-    command: ["-id=sonar_norte_01","-tipo=sonar","-setor=Setor_Norte","-broker=broker1:8080","-intervalo=1000"]
+    container_name: hormuznet_meteo_nw_2
+    command: ["-id=meteo_nw_2","-tipo=meteo","-setor=Setor_Noroeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=277", "-y=394"]
     networks:
       - hormuznet
     restart: on-failure
     depends_on:
       - broker1
 
-  sensor_boia:
+  sensor_3:
     build:
-      context: .
+      context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_sensor_boia
-    command: ["-id=boia_sul_01","-tipo=boia","-setor=Setor_Sul","-broker=broker1:8080","-intervalo=1000"]
+    container_name: hormuznet_boia_nw_3
+    command: ["-id=boia_nw_3","-tipo=boia","-setor=Setor_Noroeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=330", "-y=168"]
     networks:
       - hormuznet
     restart: on-failure
     depends_on:
       - broker1
 
-  sensor_visual:
+  sensor_4:
     build:
-      context: .
+      context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_sensor_visual
-    command: ["-id=visual_norte_01","-tipo=visual","-setor=Setor_Norte","-broker=broker1:8080","-intervalo=1000"]
+    container_name: hormuznet_meteo_nw_4
+    command: ["-id=meteo_nw_4","-tipo=meteo","-setor=Setor_Noroeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=134", "-y=109"]
     networks:
       - hormuznet
     restart: on-failure
     depends_on:
       - broker1
 
-  sensor_meteo:
+  sensor_5:
     build:
-      context: .
+      context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_sensor_meteo
-    command: ["-id=meteo_sul_01","-tipo=meteo","-setor=Setor_Sul","-broker=broker1:8080","-intervalo=1000"]
+    container_name: hormuznet_sonar_nw_5
+    command: ["-id=sonar_nw_5","-tipo=sonar","-setor=Setor_Noroeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=266", "-y=142"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+
+  sensor_6:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.sensor
+    container_name: hormuznet_radar_ne_1
+    command: ["-id=radar_ne_1","-tipo=radar","-setor=Setor_Nordeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=623", "-y=319"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+
+  sensor_7:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.sensor
+    container_name: hormuznet_radar_ne_2
+    command: ["-id=radar_ne_2","-tipo=radar","-setor=Setor_Nordeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=812", "-y=101"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+
+  sensor_8:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.sensor
+    container_name: hormuznet_meteo_ne_3
+    command: ["-id=meteo_ne_3","-tipo=meteo","-setor=Setor_Nordeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=627", "-y=355"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+
+  sensor_9:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.sensor
+    container_name: hormuznet_sonar_ne_4
+    command: ["-id=sonar_ne_4","-tipo=sonar","-setor=Setor_Nordeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=608", "-y=125"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+
+  sensor_10:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.sensor
+    container_name: hormuznet_boia_ne_5
+    command: ["-id=boia_ne_5","-tipo=boia","-setor=Setor_Nordeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=707", "-y=160"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+
+  sensor_11:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.sensor
+    container_name: hormuznet_meteo_sw_1
+    command: ["-id=meteo_sw_1","-tipo=meteo","-setor=Setor_Sudoeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=203", "-y=732"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+
+  sensor_12:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.sensor
+    container_name: hormuznet_sonar_sw_2
+    command: ["-id=sonar_sw_2","-tipo=sonar","-setor=Setor_Sudoeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=248", "-y=667"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+
+  sensor_13:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.sensor
+    container_name: hormuznet_sonar_sw_3
+    command: ["-id=sonar_sw_3","-tipo=sonar","-setor=Setor_Sudoeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=184", "-y=875"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+
+  sensor_14:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.sensor
+    container_name: hormuznet_visual_sw_4
+    command: ["-id=visual_sw_4","-tipo=visual","-setor=Setor_Sudoeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=143", "-y=617"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+
+  sensor_15:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.sensor
+    container_name: hormuznet_boia_sw_5
+    command: ["-id=boia_sw_5","-tipo=boia","-setor=Setor_Sudoeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=300", "-y=840"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+
+  sensor_16:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.sensor
+    container_name: hormuznet_visual_se_1
+    command: ["-id=visual_se_1","-tipo=visual","-setor=Setor_Sudeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=688", "-y=605"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+
+  sensor_17:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.sensor
+    container_name: hormuznet_sonar_se_2
+    command: ["-id=sonar_se_2","-tipo=sonar","-setor=Setor_Sudeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=783", "-y=616"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+
+  sensor_18:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.sensor
+    container_name: hormuznet_visual_se_3
+    command: ["-id=visual_se_3","-tipo=visual","-setor=Setor_Sudeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=795", "-y=656"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+
+  sensor_19:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.sensor
+    container_name: hormuznet_meteo_se_4
+    command: ["-id=meteo_se_4","-tipo=meteo","-setor=Setor_Sudeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=687", "-y=756"]
+    networks:
+      - hormuznet
+    restart: on-failure
+    depends_on:
+      - broker1
+
+  sensor_20:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.sensor
+    container_name: hormuznet_radar_se_5
+    command: ["-id=radar_se_5","-tipo=radar","-setor=Setor_Sudeste","-broker=224.0.0.1:8080","-intervalo=1000", "-x=847", "-y=630"]
     networks:
       - hormuznet
     restart: on-failure

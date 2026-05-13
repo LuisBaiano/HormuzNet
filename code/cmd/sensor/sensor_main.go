@@ -15,8 +15,10 @@ func main() {
 	id := flag.String("id", "sensor_01", "ID do sensor")
 	tipo := flag.String("tipo", "radar", "Tipo do sensor (radar, sonar, boia, visual, meteo)")
 	setor := flag.String("setor", "Setor_Norte", "ID do setor")
-	broker := flag.String("broker", "localhost:8080", "Endereço UDP do broker")
+	broker := flag.String("broker", "224.0.0.1:8080", "Endereço Multicast UDP")
 	intervalo := flag.Int("intervalo", 1000, "Intervalo entre leituras (ms)")
+	posX := flag.Float64("x", 0, "Posição X inicial")
+	posY := flag.Float64("y", 0, "Posição Y inicial")
 	flag.Parse()
 
 	// Seed para aleatoriedade
@@ -41,7 +43,7 @@ func main() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		leitura := gerarLeitura(*id, *tipo, *setor)
+		leitura := gerarLeitura(*id, *tipo, *setor, *posX, *posY)
 		dados, err := json.Marshal(leitura)
 		if err != nil {
 			continue
@@ -54,7 +56,7 @@ func main() {
 	}
 }
 
-func gerarLeitura(id, tipo, setor string) models.LeituraSensor {
+func gerarLeitura(id, tipo, setor string, x, y float64) models.LeituraSensor {
 	var valor float64
 	var unidade string
 	var crit models.Criticidade
@@ -64,21 +66,15 @@ func gerarLeitura(id, tipo, setor string) models.LeituraSensor {
 	case "radar":
 		valor = rand.Float64() * 100
 		unidade = "objetos"
-		if valor > 90 {
-			crit = models.CriticidadeMaxima
-		} else if valor > 75 {
+		if valor > 75 {
 			crit = models.CriticidadeAlta
-		} else if valor > 50 {
-			crit = models.CriticidadeMedia
 		} else {
 			crit = models.CriticidadeBaixa
 		}
 	case "sonar":
 		valor = rand.Float64() * 150
 		unidade = "dB"
-		if valor > 130 {
-			crit = models.CriticidadeCritica
-		} else if valor > 100 {
+		if valor > 100 {
 			crit = models.CriticidadeAlta
 		} else {
 			crit = models.CriticidadeBaixa
@@ -86,9 +82,7 @@ func gerarLeitura(id, tipo, setor string) models.LeituraSensor {
 	case "boia":
 		valor = rand.Float64() * 12
 		unidade = "m"
-		if valor > 10 {
-			crit = models.CriticidadeMaxima
-		} else if valor > 7 {
+		if valor > 7 {
 			crit = models.CriticidadeAlta
 		} else {
 			crit = models.CriticidadeBaixa
@@ -96,9 +90,7 @@ func gerarLeitura(id, tipo, setor string) models.LeituraSensor {
 	case "visual":
 		valor = rand.Float64()
 		unidade = "confiança"
-		if valor > 0.95 {
-			crit = models.CriticidadeMaxima
-		} else if valor > 0.85 {
+		if valor > 0.85 {
 			crit = models.CriticidadeAlta
 		} else {
 			crit = models.CriticidadeBaixa
@@ -107,7 +99,7 @@ func gerarLeitura(id, tipo, setor string) models.LeituraSensor {
 		valor = rand.Float64()*60 - 10 // -10 a 50
 		unidade = "°C"
 		if valor > 45 || valor < -5 {
-			crit = models.CriticidadeMedia
+			crit = models.CriticidadeAlta
 		} else {
 			crit = models.CriticidadeBaixa
 		}
@@ -119,13 +111,14 @@ func gerarLeitura(id, tipo, setor string) models.LeituraSensor {
 
 	// Injeção de eventos críticos aleatórios (2% de chance) para testar despacho de drones
 	if rand.Float64() < 0.02 {
-		crit = models.CriticidadeMaxima
+		crit = models.CriticidadeAlta
 	}
 
 	return models.LeituraSensor{
 		SensorID:    id,
 		SetorID:     setor,
 		Tipo:        tipo,
+		Posicao:     models.Coordenada{X: x, Y: y},
 		Valor:       valor,
 		Unidade:     unidade,
 		Criticidade: crit,

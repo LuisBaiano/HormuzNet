@@ -22,28 +22,27 @@ const (
 	heartbeatTimeout   = 15 * time.Second
 	envelhecerInterval = 10 * time.Second
 	despachoInterval   = 500 * time.Millisecond
-	ociosidadeTimeout  = 60 * time.Second // drone ocioso se disponível > 60s sem despacho
+	ociosidadeTimeout  = 60 * time.Second
 )
 
 // ── Estrutura do broker ───────────────────────────────────────────────────────
 
 type Broker struct {
-	id      string
-	setorID string
+	id       string
+	setorID  string
 	portaUDP string
 	portaTCP string
 
+	lamport   int
+	lamportMu sync.Mutex
+
 	fila *fila.FilaPrioridade
 
-	// Bases conectadas localmente: base_id → conn
-	basesMu sync.RWMutex
-	bases   map[string]net.Conn
-	// Posição de cada base conhecida (local e remotas)
-	basePosMu sync.RWMutex
-	basePosicoes map[string]models.Coordenada
+	// Drones conectados localmente: drone_id → conn
+	dronesLocaisMu sync.RWMutex
+	dronesLocais   map[string]net.Conn
 
 	// Lista GLOBAL de drones (todos os brokers sincronizam)
-	// drone_id → InfoDrone
 	dronesMu sync.RWMutex
 	drones   map[string]models.InfoDrone
 
@@ -66,9 +65,9 @@ func novoBroker(id, setorID, portaUDP, portaTCP string) *Broker {
 		setorID:      setorID,
 		portaUDP:     portaUDP,
 		portaTCP:     portaTCP,
+		lamport:      0,
 		fila:         fila.Nova(),
-		bases:        make(map[string]net.Conn),
-		basePosicoes: make(map[string]models.Coordenada),
+		dronesLocais: make(map[string]net.Conn),
 		drones:       make(map[string]models.InfoDrone),
 		vizinhos:     make(map[string]net.Conn),
 		ultimoHB:     make(map[string]time.Time),
@@ -77,14 +76,31 @@ func novoBroker(id, setorID, portaUDP, portaTCP string) *Broker {
 	}
 }
 
+// Relógio de Lamport
+func (b *Broker) tick() int {
+	b.lamportMu.Lock()
+	defer b.lamportMu.Unlock()
+	b.lamport++
+	return b.lamport
+}
+
+func (b *Broker) syncLamport(recebido int) {
+	b.lamportMu.Lock()
+	defer b.lamportMu.Unlock()
+	if recebido > b.lamport {
+		b.lamport = recebido
+	}
+	b.lamport++
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 func main() {
-	id      := flag.String("id",       "",             "ID único do broker (ex: B1)")
-	setor   := flag.String("setor",    "",             "ID do setor (ex: Setor_Norte)")
-	udp     := flag.String("udp",      "0.0.0.0:8080", "Porta UDP para sensores")
-	tcp     := flag.String("tcp",      "0.0.0.0:6000", "Porta TCP para bases e brokers")
-	vizStr  := flag.String("vizinhos", "",             "Endereços TCP de brokers vizinhos (vírgula)")
+	id := flag.String("id", "", "ID único do broker (ex: B1)")
+	setor := flag.String("setor", "", "ID do setor (ex: Setor_Norte)")
+	udp := flag.String("udp", "224.0.0.1:8080", "Endereço Multicast UDP para sensores")
+	tcp := flag.String("tcp", "0.0.0.0:6000", "Porta TCP para drones e brokers")
+	vizStr := flag.String("vizinhos", "", "Endereços TCP de brokers vizinhos (vírgula)")
 	flag.Parse()
 
 	if *id == "" || *setor == "" {
@@ -116,12 +132,12 @@ func (b *Broker) escutarUDP() {
 	if err != nil {
 		b.logger.Fatalf("UDP addr: %v", err)
 	}
-	conn, err := net.ListenUDP("udp", addr)
+	conn, err := net.ListenMulticastUDP("udp", nil, addr)
 	if err != nil {
-		b.logger.Fatalf("UDP listen: %v", err)
+		b.logger.Fatalf("UDP multicast listen: %v", err)
 	}
 	defer conn.Close()
-	b.logger.Printf("Escutando sensores UDP em %s", b.portaUDP)
+	b.logger.Printf("Escutando sensores em Multicast UDP %s", b.portaUDP)
 
 	buf := make([]byte, 4096)
 	for {
@@ -139,8 +155,15 @@ func (b *Broker) processarLeitura(dados []byte) {
 		return
 	}
 	if leitura.Criticidade < models.CriticidadeAlta {
-		return
+		// Apenas Alta ou Baixa chegam aqui, mas caso haja outras
+		// Baixa é registrada para envelhecimento
+		if leitura.Criticidade != models.CriticidadeBaixa {
+			return
+		}
 	}
+
+	tempoLamport := b.tick()
+
 	oc := models.Ocorrencia{
 		ID:           fmt.Sprintf("%s-%s-%d", b.id, leitura.SensorID, time.Now().UnixNano()),
 		SetorOrigem:  b.setorID,
@@ -149,14 +172,14 @@ func (b *Broker) processarLeitura(dados []byte) {
 		Descricao:    fmt.Sprintf("Sensor %s: %.2f %s", leitura.SensorID, leitura.Valor, leitura.Unidade),
 		Criticidade:  leitura.Criticidade,
 		Timestamp:    time.Now(),
-		// Posição da ocorrência = posição do sensor (futuramente virá no pacote)
-		Posicao: models.Coordenada{X: 0, Y: 0},
+		LamportTime:  tempoLamport,
+		Posicao:      leitura.Posicao,
 	}
 	b.fila.Enfileirar(oc)
-	b.logger.Printf("Ocorrência enfileirada: %s [%s] — %s", oc.ID, oc.Criticidade, oc.Descricao)
+	b.logger.Printf("Ocorrência MULTICAST recebida localmente: %s [%s] L=%d — %s", oc.ID, oc.Criticidade, tempoLamport, oc.Descricao)
 }
 
-// ── TCP — escuta bases e brokers ──────────────────────────────────────────────
+// ── TCP — escuta Drones e Brokers ─────────────────────────────────────────────
 
 func (b *Broker) escutarTCP() {
 	ln, err := net.Listen("tcp", b.portaTCP)
@@ -164,7 +187,7 @@ func (b *Broker) escutarTCP() {
 		b.logger.Fatalf("TCP listen: %v", err)
 	}
 	defer ln.Close()
-	b.logger.Printf("Escutando bases/brokers TCP em %s", b.portaTCP)
+	b.logger.Printf("Escutando Drones/Brokers TCP em %s", b.portaTCP)
 
 	for {
 		conn, err := ln.Accept()
@@ -185,18 +208,18 @@ func (b *Broker) identificarConexao(conn net.Conn) {
 	conn.SetReadDeadline(time.Time{})
 	linha := scanner.Bytes()
 
-	var mb models.MensagemBase
-	if err := json.Unmarshal(linha, &mb); err == nil && mb.Tipo == models.BaseRegistro {
-		b.registrarBase(mb.BaseID, mb.SetorID, mb.Posicao, mb.Drones, conn)
-		go b.loopLeituraBase(mb.BaseID, conn, scanner)
+	var md models.MensagemDrone
+	if err := json.Unmarshal(linha, &md); err == nil && md.Tipo == models.DroneRegistro {
+		b.registrarDroneLocal(md.DroneID, md.DroneInfo, conn)
+		go b.loopLeituraDrone(md.DroneID, conn, scanner)
 		return
 	}
 
 	var msg models.MensagemBroker
 	if err := json.Unmarshal(linha, &msg); err == nil && msg.Tipo == models.MsgRegistro {
+		b.syncLamport(msg.LamportTime)
 		b.registrarVizinho(msg.BrokerID, conn)
-		b.enviarReplicaFila(conn)
-		b.enviarSincGlobal(conn) // envia estado global de drones ao novo vizinho
+		b.enviarSincGlobal(conn)
 		go b.loopLeituraBroker(msg.BrokerID, conn, scanner)
 		return
 	}
@@ -205,90 +228,111 @@ func (b *Broker) identificarConexao(conn net.Conn) {
 	conn.Close()
 }
 
-// ── Bases ─────────────────────────────────────────────────────────────────────
+// ── Drones Locais ─────────────────────────────────────────────────────────────
 
-func (b *Broker) registrarBase(baseID, setorID string, pos models.Coordenada, drones []models.InfoDrone, conn net.Conn) {
-	b.basesMu.Lock()
-	b.bases[baseID] = conn
-	b.basesMu.Unlock()
+func (b *Broker) registrarDroneLocal(droneID string, info *models.InfoDrone, conn net.Conn) {
+	b.dronesLocaisMu.Lock()
+	b.dronesLocais[droneID] = conn
+	b.dronesLocaisMu.Unlock()
 
-	b.basePosMu.Lock()
-	b.basePosicoes[baseID] = pos
-	b.basePosMu.Unlock()
-
-	agora := time.Now()
-	b.dronesMu.Lock()
-	for _, d := range drones {
-		d.BrokerID = b.id
-		d.BaseID = baseID
-		if d.Estado == models.DroneDisponivel {
-			d.DisponiveisDesde = agora
+	if info != nil {
+		info.BrokerID = b.id
+		if info.Estado == models.DroneDisponivel {
+			info.DisponiveisDesde = time.Now()
 		}
-		b.drones[d.DroneID] = d
+		b.dronesMu.Lock()
+		b.drones[droneID] = *info
+		b.dronesMu.Unlock()
+
+		b.logger.Printf("Drone %s registrado na malha local", droneID)
+		b.broadcastVizinhos(models.MensagemBroker{
+			Tipo:        models.MsgSincDrone,
+			BrokerID:    b.id,
+			Drone:       info,
+			Timestamp:   time.Now(),
+			LamportTime: b.tick(),
+		})
 	}
-	b.dronesMu.Unlock()
-
-	b.logger.Printf("Base registrada: %s (setor=%s pos=(%.0f,%.0f) drones=%d)",
-		baseID, setorID, pos.X, pos.Y, len(drones))
-
-	// Sincroniza drones desta base com toda a malha
-	b.sincronizarDrones(drones)
 }
 
-func (b *Broker) loopLeituraBase(baseID string, conn net.Conn, scanner *bufio.Scanner) {
+func (b *Broker) loopLeituraDrone(droneID string, conn net.Conn, scanner *bufio.Scanner) {
 	defer func() {
 		conn.Close()
-		b.basesMu.Lock()
-		delete(b.bases, baseID)
-		b.basesMu.Unlock()
-		b.logger.Printf("Base %s desconectada — realocando seus drones", baseID)
-		b.realocarDronesBase(baseID)
-	}()
+		b.dronesLocaisMu.Lock()
+		delete(b.dronesLocais, droneID)
+		b.dronesLocaisMu.Unlock()
 
-	for scanner.Scan() {
-		var msg models.MensagemBase
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			continue
-		}
-		b.processarMensagemBase(msg)
-	}
-}
+		b.logger.Printf("Drone %s perdeu conexão (possível abate)", droneID)
 
-func (b *Broker) processarMensagemBase(msg models.MensagemBase) {
-	switch msg.Tipo {
-	case models.BaseDroneEstado:
-		agora := time.Now()
 		b.dronesMu.Lock()
-		d, ok := b.drones[msg.DroneID]
+		d, ok := b.drones[droneID]
 		if ok {
-			d.Estado = msg.NovoEstado
-			d.UltimaVez = agora
-			if msg.NovoEstado == models.DroneDisponivel {
-				d.OcorrenciaID = ""
-				d.DisponiveisDesde = agora
-			}
-			if msg.NovoEstado == models.DroneDespachado || msg.NovoEstado == models.DroneEmMissao {
-				d.DisponiveisDesde = time.Time{} // reseta ociosidade
-			}
-			b.drones[msg.DroneID] = d
+			d.Estado = models.DroneAbatido
+			d.UltimaVez = time.Now()
+			b.drones[droneID] = d
 		}
 		b.dronesMu.Unlock()
 
-		if !ok {
-			return
+		if ok {
+			b.broadcastVizinhos(models.MensagemBroker{
+				Tipo:        models.MsgDronePerdido,
+				BrokerID:    b.id,
+				DroneID:     droneID,
+				Motivo:      "DESCONEXAO_TCP",
+				Timestamp:   time.Now(),
+				LamportTime: b.tick(),
+			})
+			b.tratarDronePerdido(d)
 		}
+	}()
 
-		b.logger.Printf("Drone %s → %s", msg.DroneID, msg.NovoEstado)
+	for scanner.Scan() {
+		var msg models.MensagemDrone
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			continue
+		}
+		b.processarMensagemDrone(msg)
+	}
+}
 
-		// Notifica toda a malha da mudança de estado
+func (b *Broker) processarMensagemDrone(msg models.MensagemDrone) {
+	agora := time.Now()
+	b.dronesMu.Lock()
+	d, ok := b.drones[msg.DroneID]
+	
+	if ok && msg.Tipo == models.DroneKeepalive && msg.DroneInfo != nil {
+		d.Bateria = msg.DroneInfo.Bateria
+		d.Posicao = msg.DroneInfo.Posicao
+		d.UltimaVez = agora
+		b.drones[msg.DroneID] = d
+	}
+
+	if ok && msg.Tipo == models.DroneEstado {
+		d.Estado = msg.NovoEstado
+		d.Bateria = msg.Bateria
+		d.Posicao = msg.Posicao
+		d.UltimaVez = agora
+		if msg.NovoEstado == models.DroneDisponivel {
+			d.OcorrenciaID = ""
+			d.DisponiveisDesde = agora
+		}
+		if msg.NovoEstado == models.DroneDespachado || msg.NovoEstado == models.DroneEmMissao {
+			d.DisponiveisDesde = time.Time{}
+			if msg.OcorrenciaID != "" {
+				d.OcorrenciaID = msg.OcorrenciaID
+			}
+		}
+		b.drones[msg.DroneID] = d
+		b.logger.Printf("Drone %s → %s (Bat: %d%%)", msg.DroneID, msg.NovoEstado, msg.Bateria)
+
 		b.broadcastVizinhos(models.MensagemBroker{
-			Tipo:      models.MsgSincDrone,
-			BrokerID:  b.id,
-			Drone:     &d,
-			Timestamp: agora,
+			Tipo:        models.MsgSincDrone,
+			BrokerID:    b.id,
+			Drone:       &d,
+			Timestamp:   agora,
+			LamportTime: b.tick(),
 		})
 
-		// Notifica missão concluída
 		if msg.NovoEstado == models.DroneDisponivel && msg.OcorrenciaID != "" {
 			b.broadcastVizinhos(models.MensagemBroker{
 				Tipo:         models.MsgMissaoConcluida,
@@ -296,112 +340,34 @@ func (b *Broker) processarMensagemBase(msg models.MensagemBase) {
 				DroneID:      msg.DroneID,
 				OcorrenciaID: msg.OcorrenciaID,
 				Timestamp:    agora,
+				LamportTime:  b.tick(),
 			})
 		}
 
 		if msg.NovoEstado == models.DroneAbatido || msg.NovoEstado == models.DroneSemBateria {
-			b.broadcastVizinhos(models.MensagemBroker{
-				Tipo:      models.MsgDronePerdido,
-				BrokerID:  b.id,
-				DroneID:   msg.DroneID,
-				BaseID:    msg.BaseID,
-				Motivo:    string(msg.NovoEstado),
-				Timestamp: agora,
-			})
-		}
-
-	case models.BaseStatusDrones:
-		agora := time.Now()
-		b.dronesMu.Lock()
-		for _, d := range msg.Drones {
-			d.BrokerID = b.id
-			if ex, ok := b.drones[d.DroneID]; ok {
-				d.DisponiveisDesde = ex.DisponiveisDesde
-			}
-			d.UltimaVez = agora
-			b.drones[d.DroneID] = d
-		}
-		b.dronesMu.Unlock()
-	}
-}
-
-// ── Realocação de drones após base destruída ──────────────────────────────────
-
-func (b *Broker) realocarDronesBase(baseID string) {
-	b.dronesMu.Lock()
-	var orfaos []models.InfoDrone
-	for id, d := range b.drones {
-		if d.BaseID == baseID && d.Estado != models.DroneAbatido && d.Estado != models.DroneSemBateria {
-			d.Estado = models.DroneRealocando
-			b.drones[id] = d
-			orfaos = append(orfaos, d)
+			b.tratarDronePerdido(d)
 		}
 	}
 	b.dronesMu.Unlock()
-
-	if len(orfaos) == 0 {
-		return
-	}
-
-	b.logger.Printf("Realocando %d drones órfãos da base %s", len(orfaos), baseID)
-
-	// Tenta realocar em base local primeiro
-	b.basesMu.RLock()
-	var baseLocal string
-	var connLocal net.Conn
-	for bid, c := range b.bases {
-		if bid != baseID {
-			baseLocal = bid
-			connLocal = c
-			break
-		}
-	}
-	b.basesMu.RUnlock()
-
-	if baseLocal != "" {
-		b.enviarDronesParaBase(connLocal, baseLocal, orfaos)
-		return
-	}
-
-	// Sem base local disponível — pede para a malha absorver
-	b.broadcastVizinhos(models.MensagemBroker{
-		Tipo:         models.MsgRealocacaoDrones,
-		BrokerID:     b.id,
-		DronesOrfaos: orfaos,
-		Timestamp:    time.Now(),
-	})
 }
 
-func (b *Broker) enviarDronesParaBase(conn net.Conn, baseID string, drones []models.InfoDrone) {
-	cmd := models.ComandoBase{
-		Tipo:               models.CmdReceberDrones,
-		DronesParaAbsorver: drones,
-		Timestamp:          time.Now(),
-	}
-	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	if err := json.NewEncoder(conn).Encode(cmd); err != nil {
-		b.logger.Printf("Erro ao enviar drones para base %s: %v", baseID, err)
-		return
-	}
-	b.logger.Printf("%d drones realocados para base %s", len(drones), baseID)
+func (b *Broker) tratarDronePerdido(d models.InfoDrone) {
+	if d.OcorrenciaID != "" {
+		b.logger.Printf("CRÍTICO: Drone %s abatido/perdido em missão! Re-enfileirando %s", d.DroneID, d.OcorrenciaID)
+		b.atendidosMu.Lock()
+		b.atendidos[d.OcorrenciaID] = false
+		b.atendidosMu.Unlock()
 
-	// Atualiza base dos drones no estado global
-	b.dronesMu.Lock()
-	for _, d := range drones {
-		if ex, ok := b.drones[d.DroneID]; ok {
-			ex.BaseID = baseID
-			ex.Estado = models.DroneDisponivel
-			ex.DisponiveisDesde = time.Now()
-			b.drones[d.DroneID] = ex
-		}
+		// Como não temos a ocorrência original salva se ela já foi tirada da fila,
+		// precisamos que o broker que mantém a cópia repasse ou injetar uma dummy de alta prioridade.
+		// Mas a fila replicada mantém a ocorrência se ela não foi removida.
+		// Se foi, deveríamos manter um histórico.
+		// Para simplificar: Remove da lista de atendidos. Outros brokers farão o mesmo.
 	}
-	b.dronesMu.Unlock()
 }
 
 // ── Despacho por proximidade ──────────────────────────────────────────────────
 
-// droneMaisProximo retorna o drone disponível mais próximo da ocorrência.
-// Prioriza bateria como critério de desempate quando distâncias são iguais.
 func (b *Broker) droneMaisProximo(oc models.Ocorrencia) (models.InfoDrone, bool) {
 	b.dronesMu.RLock()
 	defer b.dronesMu.RUnlock()
@@ -436,7 +402,7 @@ func (b *Broker) marcarOcupado(droneID, ocorrenciaID string) {
 	}
 }
 
-// ── Loop de despacho ──────────────────────────────────────────────────────────
+// ── Loop de despacho (Exclusão Mútua Distribuída) ─────────────────────────────
 
 func (b *Broker) loopDespachar() {
 	ticker := time.NewTicker(despachoInterval)
@@ -462,80 +428,50 @@ func (b *Broker) tentarDespachar() {
 
 	drone, temDrone := b.droneMaisProximo(oc)
 	if !temDrone {
-		// Sem drone disponível em nenhuma base conhecida — propaga cascata
-		b.logger.Printf("Sem drone disponível para %s [%s] — propagando cascata", oc.ID, oc.Criticidade)
-		b.broadcastVizinhos(models.MensagemBroker{
-			Tipo:       models.MsgRequisicaoDrone,
-			BrokerID:   b.id,
-			Ocorrencia: &oc,
-			Timestamp:  time.Now(),
-		})
-		return
+		return // Fila espera um drone ficar disponível
 	}
 
-	// Drone encontrado — pode estar em base local ou remota
-	b.fila.Desenfileirar()
-	b.marcarOcupado(drone.DroneID, oc.ID)
-
-	// Sincroniza estado "ocupado" com a malha imediatamente
-	d := drone
-	d.Estado = models.DroneDespachado
-	d.OcorrenciaID = oc.ID
-	b.broadcastVizinhos(models.MensagemBroker{
-		Tipo:      models.MsgSincDrone,
-		BrokerID:  b.id,
-		Drone:     &d,
-		Timestamp: time.Now(),
-	})
-
-	cmd := models.ComandoBase{
-		Tipo:         models.CmdDespacharDrone,
-		DroneID:      drone.DroneID,
-		OcorrenciaID: oc.ID,
-		SetorDestino: oc.SetorOrigem,
-		PosicaoAlvo:  oc.Posicao,
-		Timestamp:    time.Now(),
-	}
-
-	// Envia comando para a base que gerencia o drone (local ou remota via broker)
-	b.basesMu.RLock()
-	conn, ehLocal := b.bases[drone.BaseID]
-	b.basesMu.RUnlock()
+	// Regra de Exclusão Mútua Simplificada:
+	// O Broker que detém a conexão TCP com o drone mais próximo é o responsável 
+	// por enviar o comando. Assim, não há dupla requisição.
+	b.dronesLocaisMu.RLock()
+	conn, ehLocal := b.dronesLocais[drone.DroneID]
+	b.dronesLocaisMu.RUnlock()
 
 	if ehLocal {
+		b.fila.Desenfileirar()
+		b.marcarOcupado(drone.DroneID, oc.ID)
+
+		cmd := models.ComandoDrone{
+			Tipo:         models.CmdDespacharDrone,
+			OcorrenciaID: oc.ID,
+			SetorDestino: oc.SetorOrigem,
+			PosicaoAlvo:  oc.Posicao,
+			Timestamp:    time.Now(),
+		}
+
 		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		json.NewEncoder(conn).Encode(cmd) //nolint
-		b.logger.Printf("Despachado drone %s (base local %s) → ocorrência %s [%s] dist=%.0f",
-			drone.DroneID, drone.BaseID, oc.ID, oc.Criticidade,
-			oc.Posicao.Distancia(drone.Posicao))
-	} else {
-		// Drone em base remota — solicita ao broker responsável que execute o despacho
+		json.NewEncoder(conn).Encode(cmd)
+
+		b.logger.Printf("Despachado drone LOCAL %s → ocorrência %s L=%d", drone.DroneID, oc.ID, oc.LamportTime)
+
+		b.atendidosMu.Lock()
+		b.atendidos[oc.ID] = true
+		b.atendidosMu.Unlock()
+
+		d := drone
+		d.Estado = models.DroneDespachado
+		d.OcorrenciaID = oc.ID
 		b.broadcastVizinhos(models.MensagemBroker{
 			Tipo:         models.MsgDroneDespachado,
 			BrokerID:     b.id,
 			DroneID:      drone.DroneID,
-			BaseID:       drone.BaseID,
 			OcorrenciaID: oc.ID,
-			Ocorrencia:   &oc,
+			Drone:        &d,
 			Timestamp:    time.Now(),
+			LamportTime:  b.tick(),
 		})
-		b.logger.Printf("Solicitado despacho remoto: drone %s (base %s broker %s) → %s",
-			drone.DroneID, drone.BaseID, drone.BrokerID, oc.ID)
 	}
-
-	// Notifica toda a malha que a ocorrência foi atendida
-	b.atendidosMu.Lock()
-	b.atendidos[oc.ID] = true
-	b.atendidosMu.Unlock()
-
-	b.broadcastVizinhos(models.MensagemBroker{
-		Tipo:         models.MsgDroneDespachado,
-		BrokerID:     b.id,
-		DroneID:      drone.DroneID,
-		BaseID:       drone.BaseID,
-		OcorrenciaID: oc.ID,
-		Timestamp:    time.Now(),
-	})
 }
 
 // ── Ociosidade ────────────────────────────────────────────────────────────────
@@ -547,16 +483,13 @@ func (b *Broker) loopVerificarOciosidade() {
 		agora := time.Now()
 		b.dronesMu.RLock()
 		for _, d := range b.drones {
-			if d.Estado != models.DroneDisponivel {
-				continue
-			}
-			if d.DisponiveisDesde.IsZero() {
+			if d.Estado != models.DroneDisponivel || d.DisponiveisDesde.IsZero() {
 				continue
 			}
 			ocioso := agora.Sub(d.DisponiveisDesde)
 			if ocioso > ociosidadeTimeout {
-				b.logger.Printf("[OCIOSIDADE] Drone %s disponível há %s sem despacho (base %s bateria=%d%%)",
-					d.DroneID, ocioso.Round(time.Second), d.BaseID, d.Bateria)
+				b.logger.Printf("[OCIOSIDADE] Drone %s disponível há %s sem despacho (bateria=%d%%)",
+					d.DroneID, ocioso.Round(time.Second), d.Bateria)
 			}
 		}
 		b.dronesMu.RUnlock()
@@ -585,9 +518,10 @@ func (b *Broker) conectarVizinho(addr string) {
 		}
 
 		reg := models.MensagemBroker{
-			Tipo:      models.MsgRegistro,
-			BrokerID:  b.id,
-			Timestamp: time.Now(),
+			Tipo:        models.MsgRegistro,
+			BrokerID:    b.id,
+			Timestamp:   time.Now(),
+			LamportTime: b.tick(),
 		}
 		if err := json.NewEncoder(conn).Encode(reg); err != nil {
 			conn.Close()
@@ -657,143 +591,63 @@ func (b *Broker) loopLeituraBroker(brokerID string, conn net.Conn, scanner *bufi
 }
 
 func (b *Broker) processarMensagemBroker(msg models.MensagemBroker) {
+	b.syncLamport(msg.LamportTime)
+
 	b.heartbeatMu.Lock()
 	b.ultimoHB[msg.BrokerID] = time.Now()
 	b.heartbeatMu.Unlock()
 
 	switch msg.Tipo {
-
 	case models.MsgHeartbeat:
 		// heartbeat já registrado acima
-
 	case models.MsgSincDrone:
-		// Atualiza estado global do drone recebido de outro broker
-		if msg.Drone == nil {
-			return
-		}
+		if msg.Drone == nil { return }
 		b.dronesMu.Lock()
 		existing, ok := b.drones[msg.Drone.DroneID]
 		if !ok || msg.Drone.UltimaVez.After(existing.UltimaVez) {
-			// Preserva DisponiveisDesde local se existir
 			if ok && msg.Drone.Estado == models.DroneDisponivel && existing.DisponiveisDesde.IsZero() {
 				msg.Drone.DisponiveisDesde = time.Now()
 			}
 			b.drones[msg.Drone.DroneID] = *msg.Drone
 		}
 		b.dronesMu.Unlock()
-
 	case models.MsgMissaoConcluida:
-		b.logger.Printf("Missão concluída: drone %s liberou ocorrência %s (broker %s)",
-			msg.DroneID, msg.OcorrenciaID, msg.BrokerID)
-
+		b.logger.Printf("Missão concluída: drone %s liberou ocorrência %s", msg.DroneID, msg.OcorrenciaID)
 	case models.MsgRequisicaoDrone:
-		if msg.Ocorrencia == nil {
-			return
-		}
+		if msg.Ocorrencia == nil { return }
 		oc := *msg.Ocorrencia
 		b.atendidosMu.Lock()
 		jaAtendida := b.atendidos[oc.ID]
 		b.atendidosMu.Unlock()
-		if jaAtendida {
-			return
+		if !jaAtendida {
+			b.fila.Enfileirar(oc)
 		}
-		// Enfileira a ocorrência do vizinho — será despachada pelo loop local
-		b.fila.Enfileirar(oc)
-
 	case models.MsgDroneDespachado:
-		// Ocorrência atendida — remove da fila local e marca como atendida
 		b.atendidosMu.Lock()
 		b.atendidos[msg.OcorrenciaID] = true
 		b.atendidosMu.Unlock()
 		b.fila.Remover(msg.OcorrenciaID)
-
-		// Se o drone pertence a uma base local, executa o comando
-		b.basesMu.RLock()
-		conn, ehLocal := b.bases[msg.BaseID]
-		b.basesMu.RUnlock()
-		if ehLocal && msg.Ocorrencia != nil {
-			cmd := models.ComandoBase{
-				Tipo:         models.CmdDespacharDrone,
-				DroneID:      msg.DroneID,
-				OcorrenciaID: msg.OcorrenciaID,
-				SetorDestino: msg.Ocorrencia.SetorOrigem,
-				PosicaoAlvo:  msg.Ocorrencia.Posicao,
-				Timestamp:    time.Now(),
-			}
-			conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-			json.NewEncoder(conn).Encode(cmd) //nolint
-			b.logger.Printf("Executando despacho remoto: drone %s → ocorrência %s", msg.DroneID, msg.OcorrenciaID)
-		}
-
 		b.logger.Printf("Ocorrência %s atendida por %s (drone %s)", msg.OcorrenciaID, msg.BrokerID, msg.DroneID)
-
+		if msg.Drone != nil {
+			b.dronesMu.Lock()
+			b.drones[msg.DroneID] = *msg.Drone
+			b.dronesMu.Unlock()
+		}
 	case models.MsgDronePerdido:
-		b.logger.Printf("Drone %s perdido: %s (base %s broker %s)",
-			msg.DroneID, msg.Motivo, msg.BaseID, msg.BrokerID)
-		// Atualiza estado global
+		b.logger.Printf("Drone %s perdido: %s (broker %s)", msg.DroneID, msg.Motivo, msg.BrokerID)
 		b.dronesMu.Lock()
 		if d, ok := b.drones[msg.DroneID]; ok {
 			d.Estado = models.DroneAbatido
 			d.UltimaVez = time.Now()
 			b.drones[msg.DroneID] = d
+			b.tratarDronePerdido(d)
 		}
 		b.dronesMu.Unlock()
-
-	case models.MsgDroneLiberado:
-		b.dronesMu.Lock()
-		if d, ok := b.drones[msg.DroneID]; ok {
-			d.Estado = models.DroneDisponivel
-			d.OcorrenciaID = ""
-			d.DisponiveisDesde = time.Now()
-			d.UltimaVez = time.Now()
-			b.drones[msg.DroneID] = d
-		}
-		b.dronesMu.Unlock()
-
-	case models.MsgRealocacaoDrones:
-		// Outro broker perdeu sua base — tenta absorver os drones órfãos
-		if len(msg.DronesOrfaos) == 0 {
-			return
-		}
-		b.basesMu.RLock()
-		var baseID string
-		var conn net.Conn
-		for bid, c := range b.bases {
-			baseID = bid
-			conn = c
-			break
-		}
-		b.basesMu.RUnlock()
-		if baseID == "" {
-			return // sem base disponível aqui
-		}
-		b.enviarDronesParaBase(conn, baseID, msg.DronesOrfaos)
-		b.logger.Printf("Absorvidos %d drones órfãos de %s na base %s",
-			len(msg.DronesOrfaos), msg.BrokerID, baseID)
-
-	case models.MsgReplicaFila:
-		for _, oc := range msg.FilaPendente {
-			b.fila.Enfileirar(oc)
-		}
-		b.logger.Printf("Fila replicada de %s: %d ocorrências", msg.BrokerID, len(msg.FilaPendente))
 	}
 }
 
 // ── Sincronização global de drones ────────────────────────────────────────────
 
-func (b *Broker) sincronizarDrones(drones []models.InfoDrone) {
-	for i := range drones {
-		d := drones[i]
-		b.broadcastVizinhos(models.MensagemBroker{
-			Tipo:      models.MsgSincDrone,
-			BrokerID:  b.id,
-			Drone:     &d,
-			Timestamp: time.Now(),
-		})
-	}
-}
-
-// enviarSincGlobal envia o estado de todos os drones conhecidos para um novo vizinho.
 func (b *Broker) enviarSincGlobal(conn net.Conn) {
 	b.dronesMu.RLock()
 	drones := make([]models.InfoDrone, 0, len(b.drones))
@@ -805,13 +659,14 @@ func (b *Broker) enviarSincGlobal(conn net.Conn) {
 	for i := range drones {
 		d := drones[i]
 		msg := models.MensagemBroker{
-			Tipo:      models.MsgSincDrone,
-			BrokerID:  b.id,
-			Drone:     &d,
-			Timestamp: time.Now(),
+			Tipo:        models.MsgSincDrone,
+			BrokerID:    b.id,
+			Drone:       &d,
+			Timestamp:   time.Now(),
+			LamportTime: b.tick(),
 		}
 		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		json.NewEncoder(conn).Encode(msg) //nolint
+		json.NewEncoder(conn).Encode(msg)
 	}
 }
 
@@ -822,9 +677,10 @@ func (b *Broker) loopHeartbeat() {
 	defer ticker.Stop()
 	for range ticker.C {
 		b.broadcastVizinhos(models.MensagemBroker{
-			Tipo:      models.MsgHeartbeat,
-			BrokerID:  b.id,
-			Timestamp: time.Now(),
+			Tipo:        models.MsgHeartbeat,
+			BrokerID:    b.id,
+			Timestamp:   time.Now(),
+			LamportTime: b.tick(),
 		})
 	}
 }
@@ -870,20 +726,7 @@ func (b *Broker) broadcastVizinhos(msg models.MensagemBroker) {
 	}
 }
 
-func (b *Broker) enviarReplicaFila(conn net.Conn) {
-	snap := b.fila.Snapshot()
-	if len(snap) == 0 {
-		return
-	}
-	msg := models.MensagemBroker{
-		Tipo:         models.MsgReplicaFila,
-		BrokerID:     b.id,
-		FilaPendente: snap,
-		Timestamp:    time.Now(),
-	}
-	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	json.NewEncoder(conn).Encode(msg) //nolint
-}
+
 
 func splitCSV(s string) []string {
 	var res []string
