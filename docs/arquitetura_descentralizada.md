@@ -9,6 +9,7 @@ O desenvolvimento da fase final do HormuzNet focou na transição do sistema de 
 O controle do sistema é gerenciado por uma rede de Brokers. O mapa operacional foi estruturado em 4 setores geográficos (Noroeste, Nordeste, Sudoeste, Sudeste), com cada Broker primariamente responsável por uma região. O processo de codificação priorizou a formação de uma rede *Peer-to-Peer* (P2P) entre esses servidores.
 
 ### Relógio de Lamport
+
 A consistência de estado é a espinha dorsal do sistema descentralizado. Foi adotado o algoritmo do Relógio Lógico de Lamport para estabelecer a ordenação global de eventos, sem depender dos relógios físicos das máquinas. Cada mensagem processada avança o contador lógico, garantindo que as filas de ocorrências sejam idênticas em todos os Brokers e permitindo tomadas de decisão justas e alinhadas.
 
 ## 3. Aquisição de Dados: Sensores e UDP Multicast
