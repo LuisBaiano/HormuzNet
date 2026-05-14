@@ -59,7 +59,21 @@ func main() {
 func gerarLeitura(id, tipo, setor string, x, y float64) models.LeituraSensor {
 	var valor float64
 	var unidade string
-	var crit models.Criticidade
+	crit := models.CriticidadeNula
+
+	// Só gera uma possível ocorrência em 20% das leituras para manter drones ocupados
+	if rand.Float64() > 0.20 {
+		return models.LeituraSensor{
+			SensorID:    id,
+			SetorID:     setor,
+			Tipo:        tipo,
+			Posicao:     models.Coordenada{X: x, Y: y},
+			Valor:       0,
+			Unidade:     "-",
+			Criticidade: crit,
+			Timestamp:   time.Now(),
+		}
+	}
 
 	// Geração de dados baseada no tipo para maior realismo
 	switch tipo {

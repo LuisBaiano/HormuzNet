@@ -148,17 +148,27 @@ type EventoLog struct {
 	Nivel    string `json:"nivel"` // info | warn | danger
 }
 
+type OcorrenciaDetalhada struct {
+	ID          string `json:"id"`
+	Tipo        string `json:"tipo"`
+	Criticidade string `json:"criticidade"`
+	Status      string `json:"status"`
+	Hora        string `json:"hora"`
+}
+
 type EstadoGlobal struct {
-	Drones  map[string]models.InfoDrone `json:"drones"`
-	Brokers []BrokerStatus              `json:"brokers"`
-	Eventos []EventoLog                 `json:"eventos"`
+	Drones      map[string]models.InfoDrone       `json:"drones"`
+	Brokers     []BrokerStatus                    `json:"brokers"`
+	Eventos     []EventoLog                       `json:"eventos"`
+	Ocorrencias map[string]OcorrenciaDetalhada    `json:"ocorrencias"`
 }
 
 var (
-	estadoMu sync.RWMutex
-	drones   = make(map[string]models.InfoDrone)
-	brokers  = make(map[string]*BrokerStatus)
-	eventos  []EventoLog
+	estadoMu    sync.RWMutex
+	drones      = make(map[string]models.InfoDrone)
+	brokers     = make(map[string]*BrokerStatus)
+	eventos     []EventoLog
+	ocorrencias = make(map[string]OcorrenciaDetalhada)
 )
 
 func addEvento(tipo, msg, nivel string) {
@@ -187,9 +197,13 @@ func snapshot() []byte {
 	for k, v := range drones {
 		d[k] = v
 	}
+	o := make(map[string]OcorrenciaDetalhada, len(ocorrencias))
+	for k, v := range ocorrencias {
+		o[k] = v
+	}
 	estadoMu.RUnlock()
 
-	estado := EstadoGlobal{Drones: d, Brokers: blist, Eventos: ev}
+	estado := EstadoGlobal{Drones: d, Brokers: blist, Eventos: ev, Ocorrencias: o}
 	data, _ := json.Marshal(estado)
 	return data
 }
@@ -276,6 +290,12 @@ func processarMensagem(msg models.MensagemBroker, addr string) {
 		estadoMu.Unlock()
 
 	case models.MsgDroneDespachado:
+		estadoMu.Lock()
+		if o, ok := ocorrencias[msg.OcorrenciaID]; ok {
+			o.Status = "ANDAMENTO"
+			ocorrencias[msg.OcorrenciaID] = o
+		}
+		estadoMu.Unlock()
 		addEvento("DESPACHO",
 			fmt.Sprintf("Drone %s despachado para ocorrência %s (broker %s)",
 				msg.DroneID, msg.OcorrenciaID, msg.BrokerID), "warn")
@@ -300,12 +320,29 @@ func processarMensagem(msg models.MensagemBroker, addr string) {
 		addEvento("LIBERADO", fmt.Sprintf("Drone %s disponível", msg.DroneID), "info")
 
 	case models.MsgMissaoConcluida:
+		estadoMu.Lock()
+		if o, ok := ocorrencias[msg.OcorrenciaID]; ok {
+			o.Status = "CONCLUIDA"
+			ocorrencias[msg.OcorrenciaID] = o
+		}
+		estadoMu.Unlock()
 		addEvento("MISSAO",
 			fmt.Sprintf("Missão concluída: drone %s liberou %s", msg.DroneID, msg.OcorrenciaID), "info")
 
 
 	case models.MsgRequisicaoDrone:
 		if msg.Ocorrencia != nil {
+			estadoMu.Lock()
+			if _, exists := ocorrencias[msg.Ocorrencia.ID]; !exists {
+				ocorrencias[msg.Ocorrencia.ID] = OcorrenciaDetalhada{
+					ID:          msg.Ocorrencia.ID,
+					Tipo:        msg.Ocorrencia.Tipo,
+					Criticidade: string(msg.Ocorrencia.Criticidade),
+					Status:      "ESPERA",
+					Hora:        msg.Ocorrencia.Timestamp.Format("15:04:05"),
+				}
+			}
+			estadoMu.Unlock()
 			addEvento("REQUISICAO",
 				fmt.Sprintf("Ocorrência %s [%s] em %s", msg.Ocorrencia.ID,
 					msg.Ocorrencia.Criticidade, msg.Ocorrencia.SetorOrigem), "warn")
@@ -407,19 +444,19 @@ const dashboardHTML = `<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg:       #070b12;
-  --bg2:      #0d1520;
-  --bg3:      #111c2e;
-  --border:   #1a3040;
-  --green:    #00e87a;
-  --green2:   #00a855;
-  --green3:   #003d20;
-  --amber:    #ffb800;
-  --red:      #ff3b3b;
-  --blue:     #00c2ff;
-  --dim:      #2a4a5a;
-  --text:     #b8d4c8;
-  --textdim:  #4a7060;
+  --bg:       #05080d;
+  --bg2:      #0b121a;
+  --bg3:      #101a26;
+  --border:   #1e3a4f;
+  --green:    #00ff88;
+  --green2:   #00cc6e;
+  --green3:   #004422;
+  --amber:    #ffcc00;
+  --red:      #ff4444;
+  --blue:     #00d4ff;
+  --dim:      #345a70;
+  --text:     #e0f2f7;
+  --textdim:  #7fb89d;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -484,6 +521,7 @@ header::after {
 .hstat b.green { color: var(--green); }
 .hstat b.amber { color: var(--amber); }
 .hstat b.red   { color: var(--red); }
+.hstat b.blue  { color: var(--blue); }
 .ws-dot {
   width: 8px; height: 8px;
   border-radius: 50%;
@@ -504,12 +542,15 @@ header::after {
 /* ── LAYOUT PRINCIPAL ── */
 .main {
   display: grid;
-  grid-template-columns: 340px 1fr 300px;
-  grid-template-rows: 1fr;
+  grid-template-columns: 400px 0.6fr 400px;
+  grid-template-rows: 1fr 280px;
   gap: 1px;
   background: var(--border);
   flex: 1;
   overflow: hidden;
+}
+.panel-bottom {
+  grid-column: 1 / span 3;
 }
 .panel {
   background: var(--bg);
@@ -577,8 +618,7 @@ canvas#mapa {
 .drone-card.DESPACHADO  { border-left-color: var(--amber); }
 .drone-card.EM_MISSAO   { border-left-color: var(--blue);  }
 .drone-card.RETORNANDO  { border-left-color: var(--textdim); }
-.drone-card.ABATIDO,
-.drone-card.SEM_BATERIA { border-left-color: var(--red); opacity:.6; }
+.drone-card.ABATIDO { border-left-color: var(--red); opacity:.6; }
 .drone-card.REALOCANDO  { border-left-color: var(--amber); }
 
 .dc-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
@@ -594,23 +634,10 @@ canvas#mapa {
 .dc-est.DESPACHADO  { color: var(--amber); }
 .dc-est.EM_MISSAO   { color: var(--blue);  }
 .dc-est.RETORNANDO  { color: var(--textdim); }
-.dc-est.ABATIDO,
-.dc-est.SEM_BATERIA { color: var(--red); }
+.dc-est.ABATIDO { color: var(--red); }
 .dc-est.REALOCANDO  { color: var(--amber); }
 
 .dc-info { color: var(--textdim); font-size: .66rem; display: flex; gap: 12px; }
-.bat-bar {
-  height: 3px;
-  background: var(--bg3);
-  border-radius: 2px;
-  margin-top: 5px;
-  overflow: hidden;
-}
-.bat-fill {
-  height: 100%;
-  border-radius: 2px;
-  transition: width .5s;
-}
 
 /* ── BROKERS ── */
 .broker-card {
@@ -661,6 +688,19 @@ canvas#mapa {
 .log-tipo.danger { color: var(--red); }
 .log-msg { color: var(--text); }
 
+/* ── TABELA DE FILA ── */
+.table-wrap { flex: 1; overflow-y: auto; padding: 0; }
+.fila-pedidos { width: 100%; border-collapse: collapse; font-family: 'Share Tech Mono', monospace; }
+.fila-pedidos th { 
+  position: sticky; top: 0; background: var(--bg3); 
+  text-align: left; padding: 10px; font-size: .7rem; 
+  color: var(--green); border-bottom: 2px solid var(--border);
+}
+.fila-pedidos td { padding: 8px 10px; font-size: .75rem; border-bottom: 1px solid rgba(26,48,64,.3); }
+.st-espera { color: var(--amber); }
+.st-andamento { color: var(--blue); font-weight: bold; }
+.st-concluida { color: var(--green); opacity: .8; }
+
 /* ── SCAN LINE EFFECT ── */
 body::before {
   content: '';
@@ -670,8 +710,8 @@ body::before {
     0deg,
     transparent,
     transparent 2px,
-    rgba(0,0,0,.08) 2px,
-    rgba(0,0,0,.08) 4px
+    rgba(0,0,0,.06) 2px,
+    rgba(0,0,0,.06) 4px
   );
   pointer-events: none;
   z-index: 9999;
@@ -687,6 +727,10 @@ body::before {
     <div class="hstat"><b class="amber" id="h-miss">0</b>EM MISSÃO</div>
     <div class="hstat"><b class="red"   id="h-perd">0</b>PERDIDOS</div>
     <div class="hstat"><b id="h-total">0</b>TOTAL DRONES</div>
+    <div style="width: 20px; border-left: 1px solid var(--border); margin: 0 10px;"></div>
+    <div class="hstat"><b class="amber" id="h-oc-esp">0</b>EM ESPERA</div>
+    <div class="hstat"><b class="blue" id="h-oc-and">0</b>EM ANDAMENTO</div>
+    <div class="hstat"><b class="green" id="h-oc-con">0</b>CONCLUÍDAS</div>
   </div>
   <div class="clock" id="clock">--:--:--</div>
   <div class="ws-dot" id="wsdot"></div>
@@ -733,6 +777,30 @@ body::before {
     <div class="log-wrap" id="log-eventos"></div>
   </div>
 
+  <!-- Rodapé: Fila de Pedidos -->
+  <div class="panel panel-bottom">
+    <div class="panel-title">
+      FILA DE PEDIDOS EM TEMPO REAL (PROFESSORA VIEW)
+      <span class="cnt" id="cnt-ocorrencias">0</span>
+    </div>
+    <div class="table-wrap">
+      <table class="fila-pedidos">
+        <thead>
+          <tr>
+            <th>HORA</th>
+            <th>ID DO PEDIDO</th>
+            <th>TIPO</th>
+            <th>CRITICIDADE</th>
+            <th>STATUS ATUAL</th>
+          </tr>
+        </thead>
+        <tbody id="corpo-fila">
+          <!-- Dinâmico -->
+        </tbody>
+      </table>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -741,7 +809,7 @@ let estado = {drones: {}, brokers: [], eventos: []};
 let ws = null;
 const COR = {
   DISPONIVEL:'#00e87a', DESPACHADO:'#ffb800', EM_MISSAO:'#00c2ff',
-  RETORNANDO:'#4a7060', ABATIDO:'#ff3b3b', SEM_BATERIA:'#ff3b3b', REALOCANDO:'#ffb800'
+  RETORNANDO:'#4a7060', ABATIDO:'#ff3b3b', REALOCANDO:'#ffb800'
 };
 
 // ── Relógio ───────────────────────────────────────────────────────────────────
@@ -767,6 +835,7 @@ function renderTudo() {
   renderBrokers();
   renderLog();
   renderMapa();
+  renderOcorrencias();
   atualizarHeader();
 }
 
@@ -774,11 +843,38 @@ function atualizarHeader() {
   const d = Object.values(estado.drones || {});
   const disp  = d.filter(x => x.estado === 'DISPONIVEL').length;
   const miss  = d.filter(x => x.estado === 'EM_MISSAO' || x.estado === 'DESPACHADO').length;
-  const perd  = d.filter(x => x.estado === 'ABATIDO' || x.estado === 'SEM_BATERIA').length;
+  const perd  = d.filter(x => x.estado === 'ABATIDO').length;
   document.getElementById('h-disp').textContent  = disp;
   document.getElementById('h-miss').textContent  = miss;
   document.getElementById('h-perd').textContent  = perd;
   document.getElementById('h-total').textContent = d.length;
+
+  const o = Object.values(estado.ocorrencias || {});
+  const esp = o.filter(x => x.status === 'ESPERA').length;
+  const and = o.filter(x => x.status === 'ANDAMENTO').length;
+  const con = o.filter(x => x.status === 'CONCLUIDA').length;
+  document.getElementById('h-oc-esp').textContent = esp;
+  document.getElementById('h-oc-and').textContent = and;
+  document.getElementById('h-oc-con').textContent = con;
+}
+
+function renderOcorrencias() {
+  const cont = document.getElementById('corpo-fila');
+  const olist = Object.values(estado.ocorrencias || {})
+    .sort((a,b) => b.id.localeCompare(a.id)) // Mais recentes primeiro
+    .slice(0, 50);
+  document.getElementById('cnt-ocorrencias').textContent = Object.keys(estado.ocorrencias).length;
+
+  cont.innerHTML = olist.map(o => {
+    const stClass = 'st-' + o.status.toLowerCase();
+    return '<tr>'
+      + '<td>' + o.hora + '</td>'
+      + '<td style="font-size:.65rem;color:var(--dim)">' + o.id + '</td>'
+      + '<td>' + o.tipo.toUpperCase() + '</td>'
+      + '<td style="color:' + (o.criticidade==='ALTA'?'var(--red)':'var(--textdim)') + '">' + o.criticidade + '</td>'
+      + '<td class="' + stClass + '">' + o.status + '</td>'
+      + '</tr>';
+  }).join('');
 }
 
 function renderDrones() {
@@ -859,23 +955,34 @@ function renderMapa() {
   ctx.beginPath(); ctx.moveTo(W/2,0); ctx.lineTo(W/2,H); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(0,H/2); ctx.lineTo(W,H/2); ctx.stroke();
 
-  // Zonas dos Brokers
-  const drawSec = (c, x, y) => {
-    ctx.fillStyle = c; ctx.fillRect(x, y, W/2, H/2);
-    ctx.strokeStyle = c.replace('0.15', '0.5'); ctx.strokeRect(x, y, W/2, H/2);
+  // Zonas dos Brokers (Grade 3x3 vazada no centro)
+  const drawSec = (c, x, y, w, h) => {
+    ctx.fillStyle = c; ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = c.replace('0.15', '0.5'); ctx.strokeRect(x, y, w, h);
   };
-  drawSec('rgba(0, 232, 122, 0.15)', 0, 0); // NW
-  drawSec('rgba(0, 194, 255, 0.15)', W/2, 0); // NE
-  drawSec('rgba(255, 184, 0, 0.15)', 0, H/2); // SW
-  drawSec('rgba(255, 59, 59, 0.15)', W/2, H/2); // SE
+  const cw = W/3, ch = H/3;
+  drawSec('rgba(0, 232, 122, 0.15)', 0, 0, cw, ch); // NW
+  drawSec('rgba(0, 194, 255, 0.15)', cw, 0, cw, ch); // N
+  drawSec('rgba(255, 184, 0, 0.15)', cw*2, 0, cw, ch); // NE
+  drawSec('rgba(255, 59, 59, 0.15)', cw*2, ch, cw, ch); // E
+  drawSec('rgba(0, 232, 122, 0.15)', cw*2, ch*2, cw, ch); // SE
+  drawSec('rgba(0, 194, 255, 0.15)', cw, ch*2, cw, ch); // S
+  drawSec('rgba(255, 184, 0, 0.15)', 0, ch*2, cw, ch); // SW
+  drawSec('rgba(255, 59, 59, 0.15)', 0, ch, cw, ch); // W
+  drawSec('rgba(100, 100, 100, 0.15)', cw, ch, cw, ch); // CENTRO
 
   ctx.fillStyle = 'rgba(255,255,255,0.7)';
-  ctx.font = 'bold 16px Orbitron';
+  ctx.font = 'bold 12px Orbitron';
   ctx.textAlign = 'center';
-  ctx.fillText('B1: SETOR NOROESTE', W/4, H/4);
-  ctx.fillText('B2: SETOR NORDESTE', W*0.75, H/4);
-  ctx.fillText('B3: SETOR SUDOESTE', W/4, H*0.75);
-  ctx.fillText('B4: SETOR SUDESTE', W*0.75, H*0.75);
+  ctx.fillText('B1: NOROESTE', cw/2, ch/2);
+  ctx.fillText('B2: NORTE', cw*1.5, ch/2);
+  ctx.fillText('B3: NORDESTE', cw*2.5, ch/2);
+  ctx.fillText('B4: LESTE', cw*2.5, ch*1.5);
+  ctx.fillText('B5: SUDESTE', cw*2.5, ch*2.5);
+  ctx.fillText('B6: SUL', cw*1.5, ch*2.5);
+  ctx.fillText('B7: SUDOESTE', cw/2, ch*2.5);
+  ctx.fillText('B8: OESTE', cw/2, ch*1.5);
+  ctx.fillText('B9: CENTRO', cw*1.5, ch*1.5);
 
   const dlist = Object.values(estado.drones || {});
   if (!dlist.length) {

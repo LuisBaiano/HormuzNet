@@ -55,6 +55,9 @@ type Broker struct {
 
 	atendidosMu sync.Mutex
 	atendidos   map[string]bool
+	
+	ocorrenciasMu sync.RWMutex
+	ocorrencias   map[string]models.Ocorrencia
 
 	logger *log.Logger
 }
@@ -72,6 +75,7 @@ func novoBroker(id, setorID, portaUDP, portaTCP string) *Broker {
 		vizinhos:     make(map[string]net.Conn),
 		ultimoHB:     make(map[string]time.Time),
 		atendidos:    make(map[string]bool),
+		ocorrencias:  make(map[string]models.Ocorrencia),
 		logger:       log.New(os.Stdout, fmt.Sprintf("[BROKER:%s] ", id), log.LstdFlags),
 	}
 }
@@ -154,6 +158,12 @@ func (b *Broker) processarLeitura(dados []byte) {
 	if err := json.Unmarshal(dados, &leitura); err != nil {
 		return
 	}
+
+	// Filtro Regional: Broker só atende sensores do seu próprio setor
+	if leitura.SetorID != b.setorID {
+		return
+	}
+
 	if leitura.Criticidade < models.CriticidadeAlta {
 		// Apenas Alta ou Baixa chegam aqui, mas caso haja outras
 		// Baixa é registrada para envelhecimento
@@ -165,18 +175,30 @@ func (b *Broker) processarLeitura(dados []byte) {
 	tempoLamport := b.tick()
 
 	oc := models.Ocorrencia{
-		ID:           fmt.Sprintf("%s-%s-%d", b.id, leitura.SensorID, time.Now().UnixNano()),
-		SetorOrigem:  b.setorID,
+		ID:           fmt.Sprintf("%s-%d", leitura.SensorID, leitura.Timestamp.UnixNano()),
+		SetorOrigem:  leitura.SetorID,
 		BrokerOrigem: b.id,
 		Tipo:         leitura.Tipo,
 		Descricao:    fmt.Sprintf("Sensor %s: %.2f %s", leitura.SensorID, leitura.Valor, leitura.Unidade),
 		Criticidade:  leitura.Criticidade,
-		Timestamp:    time.Now(),
+		Timestamp:    leitura.Timestamp,
 		LamportTime:  tempoLamport,
 		Posicao:      leitura.Posicao,
 	}
+	b.ocorrenciasMu.Lock()
+	b.ocorrencias[oc.ID] = oc
+	b.ocorrenciasMu.Unlock()
+
 	b.fila.Enfileirar(oc)
 	b.logger.Printf("Ocorrência MULTICAST recebida localmente: %s [%s] L=%d — %s", oc.ID, oc.Criticidade, tempoLamport, oc.Descricao)
+
+	b.broadcastVizinhos(models.MensagemBroker{
+		Tipo:        models.MsgRequisicaoDrone,
+		BrokerID:    b.id,
+		Ocorrencia:  &oc,
+		Timestamp:   time.Now(),
+		LamportTime: tempoLamport,
+	})
 }
 
 // ── TCP — escuta Drones e Brokers ─────────────────────────────────────────────
@@ -301,7 +323,6 @@ func (b *Broker) processarMensagemDrone(msg models.MensagemDrone) {
 	d, ok := b.drones[msg.DroneID]
 	
 	if ok && msg.Tipo == models.DroneKeepalive && msg.DroneInfo != nil {
-		d.Bateria = msg.DroneInfo.Bateria
 		d.Posicao = msg.DroneInfo.Posicao
 		d.UltimaVez = agora
 		b.drones[msg.DroneID] = d
@@ -309,7 +330,6 @@ func (b *Broker) processarMensagemDrone(msg models.MensagemDrone) {
 
 	if ok && msg.Tipo == models.DroneEstado {
 		d.Estado = msg.NovoEstado
-		d.Bateria = msg.Bateria
 		d.Posicao = msg.Posicao
 		d.UltimaVez = agora
 		if msg.NovoEstado == models.DroneDisponivel {
@@ -323,7 +343,7 @@ func (b *Broker) processarMensagemDrone(msg models.MensagemDrone) {
 			}
 		}
 		b.drones[msg.DroneID] = d
-		b.logger.Printf("Drone %s → %s (Bat: %d%%)", msg.DroneID, msg.NovoEstado, msg.Bateria)
+		b.logger.Printf("Drone %s → %s", msg.DroneID, msg.NovoEstado)
 
 		b.broadcastVizinhos(models.MensagemBroker{
 			Tipo:        models.MsgSincDrone,
@@ -344,7 +364,7 @@ func (b *Broker) processarMensagemDrone(msg models.MensagemDrone) {
 			})
 		}
 
-		if msg.NovoEstado == models.DroneAbatido || msg.NovoEstado == models.DroneSemBateria {
+		if msg.NovoEstado == models.DroneAbatido {
 			b.tratarDronePerdido(d)
 		}
 	}
@@ -354,15 +374,18 @@ func (b *Broker) processarMensagemDrone(msg models.MensagemDrone) {
 func (b *Broker) tratarDronePerdido(d models.InfoDrone) {
 	if d.OcorrenciaID != "" {
 		b.logger.Printf("CRÍTICO: Drone %s abatido/perdido em missão! Re-enfileirando %s", d.DroneID, d.OcorrenciaID)
+		
 		b.atendidosMu.Lock()
 		b.atendidos[d.OcorrenciaID] = false
 		b.atendidosMu.Unlock()
 
-		// Como não temos a ocorrência original salva se ela já foi tirada da fila,
-		// precisamos que o broker que mantém a cópia repasse ou injetar uma dummy de alta prioridade.
-		// Mas a fila replicada mantém a ocorrência se ela não foi removida.
-		// Se foi, deveríamos manter um histórico.
-		// Para simplificar: Remove da lista de atendidos. Outros brokers farão o mesmo.
+		b.ocorrenciasMu.RLock()
+		oc, ok := b.ocorrencias[d.OcorrenciaID]
+		b.ocorrenciasMu.RUnlock()
+
+		if ok {
+			b.fila.Enfileirar(oc)
+		}
 	}
 }
 
@@ -381,7 +404,7 @@ func (b *Broker) droneMaisProximo(oc models.Ocorrencia) (models.InfoDrone, bool)
 			continue
 		}
 		dist := oc.Posicao.Distancia(d.Posicao)
-		if !encontrou || dist < menorDist || (dist == menorDist && d.Bateria > melhor.Bateria) {
+		if !encontrou || dist < menorDist {
 			melhor = d
 			menorDist = dist
 			encontrou = true
@@ -488,8 +511,8 @@ func (b *Broker) loopVerificarOciosidade() {
 			}
 			ocioso := agora.Sub(d.DisponiveisDesde)
 			if ocioso > ociosidadeTimeout {
-				b.logger.Printf("[OCIOSIDADE] Drone %s disponível há %s sem despacho (bateria=%d%%)",
-					d.DroneID, ocioso.Round(time.Second), d.Bateria)
+				b.logger.Printf("[OCIOSIDADE] Drone %s disponível há %s sem despacho",
+					d.DroneID, ocioso.Round(time.Second))
 			}
 		}
 		b.dronesMu.RUnlock()
@@ -613,6 +636,9 @@ func (b *Broker) processarMensagemBroker(msg models.MensagemBroker) {
 		b.dronesMu.Unlock()
 	case models.MsgMissaoConcluida:
 		b.logger.Printf("Missão concluída: drone %s liberou ocorrência %s", msg.DroneID, msg.OcorrenciaID)
+		b.ocorrenciasMu.Lock()
+		delete(b.ocorrencias, msg.OcorrenciaID)
+		b.ocorrenciasMu.Unlock()
 	case models.MsgRequisicaoDrone:
 		if msg.Ocorrencia == nil { return }
 		oc := *msg.Ocorrencia
@@ -620,6 +646,9 @@ func (b *Broker) processarMensagemBroker(msg models.MensagemBroker) {
 		jaAtendida := b.atendidos[oc.ID]
 		b.atendidosMu.Unlock()
 		if !jaAtendida {
+			b.ocorrenciasMu.Lock()
+			b.ocorrencias[oc.ID] = oc
+			b.ocorrenciasMu.Unlock()
 			b.fila.Enfileirar(oc)
 		}
 	case models.MsgDroneDespachado:

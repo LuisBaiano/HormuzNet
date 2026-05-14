@@ -7,12 +7,15 @@ import "time"
 type Criticidade int
 
 const (
+	CriticidadeNula  Criticidade = 0
 	CriticidadeBaixa Criticidade = 1
 	CriticidadeAlta  Criticidade = 2
 )
 
 func (c Criticidade) String() string {
 	switch c {
+	case CriticidadeNula:
+		return "NORMAL"
 	case CriticidadeBaixa:
 		return "BAIXA"
 	case CriticidadeAlta:
@@ -47,7 +50,6 @@ const (
 	DroneEmMissao   EstadoDrone = "EM_MISSAO"
 	DroneRetornando EstadoDrone = "RETORNANDO"
 	DroneAbatido    EstadoDrone = "ABATIDO"
-	DroneSemBateria EstadoDrone = "SEM_BATERIA"
 )
 
 // ── Sensor → Broker (UDP) ─────────────────────────────────────────────────────
@@ -86,7 +88,6 @@ type InfoDrone struct {
 	BrokerID     string      `json:"broker_id"` // broker responsável atual
 	Estado       EstadoDrone `json:"estado"`
 	OcorrenciaID string      `json:"ocorrencia_id,omitempty"`
-	Bateria      int         `json:"bateria"` // 0-100 %
 	Posicao      Coordenada  `json:"posicao"` // posição atual
 	UltimaVez    time.Time   `json:"ultima_vez"`
 	// Controle de ociosidade: instante em que ficou disponível pela última vez
@@ -94,7 +95,7 @@ type InfoDrone struct {
 }
 
 func (d *InfoDrone) Disponivel() bool {
-	return d.Estado == DroneDisponivel && d.Bateria > 10
+	return d.Estado == DroneDisponivel
 }
 
 // ── Mensagens broker↔broker (TCP) ────────────────────────────────────────────
@@ -154,7 +155,6 @@ type MensagemDrone struct {
 	NovoEstado   EstadoDrone       `json:"novo_estado,omitempty"`
 	OcorrenciaID string            `json:"ocorrencia_id,omitempty"`
 	Posicao      Coordenada        `json:"posicao,omitempty"`
-	Bateria      int               `json:"bateria,omitempty"`
 }
 
 type TipoComandoDrone string
