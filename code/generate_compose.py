@@ -27,7 +27,7 @@ types = ["radar", "sonar", "boia", "visual", "meteo"]
 
 sensors = []
 for i, b in enumerate(brokers):
-    for j in range(5):
+    for j in range(2):
         t = random.choice(types)
         if "Noroeste" in b["setor"]: x = random.randint(100, 300); y = random.randint(100, 300); short = "nw"
         elif "Norte" in b["setor"]: x = random.randint(400, 600); y = random.randint(100, 300); short = "n"
