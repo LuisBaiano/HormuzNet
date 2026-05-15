@@ -61,8 +61,8 @@ func gerarLeitura(id, tipo, setor string, x, y float64) models.LeituraSensor {
 	var unidade string
 	crit := models.CriticidadeNula
 
-	// Só gera uma possível ocorrência em 20% das leituras para manter drones ocupados
-	if rand.Float64() > 0.20 {
+	// Só gera uma possível ocorrência em 30% das leituras para manter drones ocupados
+	if rand.Float64() > 0.30 {
 		return models.LeituraSensor{
 			SensorID:    id,
 			SetorID:     setor,

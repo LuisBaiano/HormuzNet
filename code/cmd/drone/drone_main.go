@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	missaoDurMin   = 8 * time.Second
-	missaoDurMax   = 20 * time.Second
-	retornoDur     = 5 * time.Second
+	missaoDurMin   = 4 * time.Second
+	missaoDurMax   = 8 * time.Second
+	retornoDur     = 3 * time.Second
 	keepaliveIntv  = 3 * time.Second
 )
 
@@ -277,7 +277,7 @@ func (d *Drone) iniciarMissao(ocorrenciaID string, alvo models.Coordenada) {
 	d.mu.Unlock()
 
 	d.logger.Printf("Pronto e Disponível")
-	d.notificarEstado(models.DroneDisponivel, "", posInicial)
+	d.notificarEstado(models.DroneDisponivel, ocorrenciaID, posInicial)
 }
 
 func (d *Drone) abortarMissao() {

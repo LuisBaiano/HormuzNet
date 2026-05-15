@@ -337,7 +337,7 @@ func processarMensagem(msg models.MensagemBroker, addr string) {
 				ocorrencias[msg.Ocorrencia.ID] = OcorrenciaDetalhada{
 					ID:          msg.Ocorrencia.ID,
 					Tipo:        msg.Ocorrencia.Tipo,
-					Criticidade: string(msg.Ocorrencia.Criticidade),
+					Criticidade: msg.Ocorrencia.Criticidade.String(),
 					Status:      "ESPERA",
 					Hora:        msg.Ocorrencia.Timestamp.Format("15:04:05"),
 				}
@@ -542,7 +542,7 @@ header::after {
 /* ── LAYOUT PRINCIPAL ── */
 .main {
   display: grid;
-  grid-template-columns: 400px 0.6fr 400px;
+  grid-template-columns: 320px 1fr 320px;
   grid-template-rows: 1fr 280px;
   gap: 1px;
   background: var(--border);
@@ -560,7 +560,7 @@ header::after {
 }
 .panel-title {
   font-family: 'Orbitron', sans-serif;
-  font-size: .65rem;
+  font-size: .85rem;
   font-weight: 700;
   letter-spacing: .2em;
   color: var(--green2);
@@ -597,7 +597,7 @@ canvas#mapa {
   background: rgba(7,11,18,.85);
   border: 1px solid var(--border);
   padding: 8px 12px;
-  font-size: .62rem;
+  font-size: .8rem;
   line-height: 1.8;
 }
 .leg { display: flex; align-items: center; gap: 6px; }
@@ -611,7 +611,7 @@ canvas#mapa {
   border-radius: 4px;
   padding: 8px 10px;
   margin-bottom: 6px;
-  font-size: .72rem;
+  font-size: .85rem;
   transition: border-color .2s;
 }
 .drone-card.DISPONIVEL  { border-left-color: var(--green); }
@@ -725,6 +725,7 @@ body::before {
   <div class="header-stats">
     <div class="hstat"><b class="green" id="h-disp">0</b>DISPONÍVEIS</div>
     <div class="hstat"><b class="amber" id="h-miss">0</b>EM MISSÃO</div>
+    <div class="hstat"><b class="blue"  id="h-ret">0</b>RETORNANDO</div>
     <div class="hstat"><b class="red"   id="h-perd">0</b>PERDIDOS</div>
     <div class="hstat"><b id="h-total">0</b>TOTAL DRONES</div>
     <div style="width: 20px; border-left: 1px solid var(--border); margin: 0 10px;"></div>
@@ -780,7 +781,7 @@ body::before {
   <!-- Rodapé: Fila de Pedidos -->
   <div class="panel panel-bottom">
     <div class="panel-title">
-      FILA DE PEDIDOS EM TEMPO REAL (PROFESSORA VIEW)
+      FILA DE PEDIDOS EM TEMPO REAL
       <span class="cnt" id="cnt-ocorrencias">0</span>
     </div>
     <div class="table-wrap">
@@ -843,9 +844,11 @@ function atualizarHeader() {
   const d = Object.values(estado.drones || {});
   const disp  = d.filter(x => x.estado === 'DISPONIVEL').length;
   const miss  = d.filter(x => x.estado === 'EM_MISSAO' || x.estado === 'DESPACHADO').length;
+  const ret   = d.filter(x => x.estado === 'RETORNANDO').length;
   const perd  = d.filter(x => x.estado === 'ABATIDO').length;
   document.getElementById('h-disp').textContent  = disp;
   document.getElementById('h-miss').textContent  = miss;
+  document.getElementById('h-ret').textContent   = ret;
   document.getElementById('h-perd').textContent  = perd;
   document.getElementById('h-total').textContent = d.length;
 
@@ -971,8 +974,8 @@ function renderMapa() {
   drawSec('rgba(255, 59, 59, 0.15)', 0, ch, cw, ch); // W
   drawSec('rgba(100, 100, 100, 0.15)', cw, ch, cw, ch); // CENTRO
 
-  ctx.fillStyle = 'rgba(255,255,255,0.7)';
-  ctx.font = 'bold 12px Orbitron';
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.font = 'bold 11px Orbitron';
   ctx.textAlign = 'center';
   ctx.fillText('B1: NOROESTE', cw/2, ch/2);
   ctx.fillText('B2: NORTE', cw*1.5, ch/2);
@@ -993,16 +996,14 @@ function renderMapa() {
     return;
   }
 
-  // Calcula escala para caber todos os pontos
-  const xs = dlist.map(d => (d.posicao||{x:0}).x);
-  const ys = dlist.map(d => (d.posicao||{y:0}).y);
-  const xMin = Math.min(...xs) - 50, xMax = Math.max(...xs) + 50;
-  const yMin = Math.min(...ys) - 50, yMax = Math.max(...ys) + 50;
-  const scaleX = (W - 60) / (xMax - xMin || 1);
-  const scaleY = (H - 60) / (yMax - yMin || 1);
+  // Escala fixa para grade 3x3 (0 a 1000 unidades)
+  const xMin = 0, xMax = 1000;
+  const yMin = 0, yMax = 1000;
+  const scaleX = (W - 40) / (xMax - xMin);
+  const scaleY = (H - 40) / (yMax - yMin);
   const scale  = Math.min(scaleX, scaleY);
-  const offX = (W - (xMax - xMin) * scale) / 2 - xMin * scale;
-  const offY = (H - (yMax - yMin) * scale) / 2 - yMin * scale;
+  const offX = (W - (xMax - xMin) * scale) / 2;
+  const offY = (H - (yMax - yMin) * scale) / 2;
 
   const toScreen = (x, y) => ({ sx: x * scale + offX, sy: H - (y * scale + offY) });
 
@@ -1034,9 +1035,9 @@ function renderMapa() {
 
     // Label
     ctx.fillStyle = cor;
-    ctx.font = '9px Share Tech Mono';
+    ctx.font = 'bold 10px Share Tech Mono';
     ctx.textAlign = 'center';
-    ctx.fillText(d.drone_id.split('_').pop(), sx, sy - 9);
+    ctx.fillText(d.drone_id.split('_').pop(), sx, sy - 10);
   });
 }
 

@@ -326,6 +326,15 @@ func (b *Broker) processarMensagemDrone(msg models.MensagemDrone) {
 		d.Posicao = msg.DroneInfo.Posicao
 		d.UltimaVez = agora
 		b.drones[msg.DroneID] = d
+		
+		// Sincroniza a nova posição com os outros brokers
+		b.broadcastVizinhos(models.MensagemBroker{
+			Tipo:        models.MsgSincDrone,
+			BrokerID:    b.id,
+			Drone:       &d,
+			Timestamp:   agora,
+			LamportTime: b.tick(),
+		})
 	}
 
 	if ok && msg.Tipo == models.DroneEstado {
@@ -449,21 +458,27 @@ func (b *Broker) tentarDespachar() {
 		return
 	}
 
-	drone, temDrone := b.droneMaisProximo(oc)
-	if !temDrone {
-		return // Fila espera um drone ficar disponível
-	}
-
-	// Regra de Exclusão Mútua Simplificada:
-	// O Broker que detém a conexão TCP com o drone mais próximo é o responsável 
-	// por enviar o comando. Assim, não há dupla requisição.
+	// Nova Lógica Pró-Ativa: Se eu tenho um drone local, eu tento atender o topo da fila.
+	// Isso evita o impasse onde brokers ficam esperando uns aos outros.
+	
 	b.dronesLocaisMu.RLock()
-	conn, ehLocal := b.dronesLocais[drone.DroneID]
+	var droneAlvo string
+	var conn net.Conn
+	for id, c := range b.dronesLocais {
+		b.dronesMu.RLock()
+		d, ok := b.drones[id]
+		b.dronesMu.RUnlock()
+		if ok && d.Disponivel() {
+			droneAlvo = id
+			conn = c
+			break
+		}
+	}
 	b.dronesLocaisMu.RUnlock()
 
-	if ehLocal {
+	if droneAlvo != "" {
 		b.fila.Desenfileirar()
-		b.marcarOcupado(drone.DroneID, oc.ID)
+		b.marcarOcupado(droneAlvo, oc.ID)
 
 		cmd := models.ComandoDrone{
 			Tipo:         models.CmdDespacharDrone,
@@ -476,21 +491,22 @@ func (b *Broker) tentarDespachar() {
 		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 		json.NewEncoder(conn).Encode(cmd)
 
-		b.logger.Printf("Despachado drone LOCAL %s → ocorrência %s L=%d", drone.DroneID, oc.ID, oc.LamportTime)
+		b.logger.Printf("Despacho PRÓ-ATIVO: drone %s → ocorrência %s", droneAlvo, oc.ID)
 
 		b.atendidosMu.Lock()
 		b.atendidos[oc.ID] = true
 		b.atendidosMu.Unlock()
 
-		d := drone
-		d.Estado = models.DroneDespachado
-		d.OcorrenciaID = oc.ID
+		b.dronesMu.RLock()
+		dInfo := b.drones[droneAlvo]
+		b.dronesMu.RUnlock()
+		
 		b.broadcastVizinhos(models.MensagemBroker{
 			Tipo:         models.MsgDroneDespachado,
 			BrokerID:     b.id,
-			DroneID:      drone.DroneID,
+			DroneID:      droneAlvo,
 			OcorrenciaID: oc.ID,
-			Drone:        &d,
+			Drone:        &dInfo,
 			Timestamp:    time.Now(),
 			LamportTime:  b.tick(),
 		})
@@ -640,7 +656,7 @@ func (b *Broker) processarMensagemBroker(msg models.MensagemBroker) {
 		delete(b.ocorrencias, msg.OcorrenciaID)
 		b.ocorrenciasMu.Unlock()
 	case models.MsgRequisicaoDrone:
-		if msg.Ocorrencia == nil { return }
+		if msg.Ocorrencia == nil || msg.Ocorrencia.Criticidade == models.CriticidadeNula { return }
 		oc := *msg.Ocorrencia
 		b.atendidosMu.Lock()
 		jaAtendida := b.atendidos[oc.ID]
