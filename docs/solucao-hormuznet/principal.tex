@@ -1,0 +1,63 @@
+\documentclass[12pt]{article}
+\usepackage{float}
+\usepackage{placeins}
+\usepackage{sbc-template}
+\usepackage{graphicx,url}
+\usepackage[brazil]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage{booktabs}
+\usepackage[table]{xcolor}
+
+\sloppy
+
+\title{HormuzNet: Monitoramento Marítimo Descentralizado e Resiliência em Sistemas Críticos}
+
+\author{Luis Felipe Pereira de Carvalho\inst{1}}
+
+\address{Departamento de Tecnologia -- Universidade Estadual de Feira de Santana (UEFS)\\
+  44036-900 -- Feira de Santana -- Bahia
+  \email{luisoftbr@outlook.com.br}}
+
+\begin{document}
+
+\maketitle
+
+\begin{resumo}
+Este trabalho apresenta o HormuzNet, um sistema de monitoramento marítimo
+descentralizado desenvolvido para garantir a resiliência e a disponibilidade de
+dados no Estreito de Ormuz. A solução substitui arquiteturas centralizadas por
+uma malha autônoma de brokers que utilizam o Relógio Lógico de Lamport para
+ordenação global de eventos e exclusão mútua distribuída. A comunicação é
+baseada em protocolos nativos: UDP Multicast para aquisição redundante de dados
+de sensores, TCP persistente com lógica de \textit{fallback} para coordenação de
+drones autônomos e WebSocket para visualização tática em tempo real. O sistema
+inclui um modelo de falhas probabilístico para drones e foi validado em ambiente
+conteinerizado, demonstrando capacidade de recuperação automática diante da
+queda de nós e consistência no despacho de missões.
+
+\end{resumo}
+
+\section{Introdução}
+\label{sec:introducao}
+\input{introducao}
+
+\section{Fundamentação Teórica}
+\label{sec:fundamentos}
+\input{fundamentos}
+
+\section{Metodologia, Implementação e Testes}
+\label{sec:metodologia}
+\input{metodologia}
+
+\section{Resultados e Discussões}
+\label{sec:resultados}
+\input{resultados}
+
+\section{Conclusão}
+\label{sec:conclusao}
+\input{conclusao}
+
+\bibliographystyle{sbc}
+\bibliography{bibliografia}
+
+\end{document}
