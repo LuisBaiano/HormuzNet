@@ -15,7 +15,7 @@ func main() {
 	id := flag.String("id", "sensor_01", "ID do sensor")
 	tipo := flag.String("tipo", "radar", "Tipo do sensor (radar, sonar, boia, visual, meteo)")
 	setor := flag.String("setor", "Setor_Norte", "ID do setor")
-	broker := flag.String("broker", "224.0.0.1:8080", "Endereço Multicast UDP")
+	broker := flag.String("broker", "224.1.2.3:9876", "Endereço Multicast UDP")
 	intervalo := flag.Int("intervalo", 1000, "Intervalo entre leituras (ms)")
 	posX := flag.Float64("x", 0, "Posição X inicial")
 	posY := flag.Float64("y", 0, "Posição Y inicial")
