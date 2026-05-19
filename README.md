@@ -4,90 +4,62 @@
   <img src="images/arquitetura_hormuz.png" alt="Arquitetura do Sistema HormuzNet" width="85%" />
 </p>
 
-O **HormuzNet** é uma plataforma de monitoramento marítimo e resposta tática em tempo real para a região estratégica do Estreito de Ormuz. Desenvolvido em **Go**, o projeto implementa uma arquitetura totalmente distribuída, sem pontos únicos de falha (*Single Points of Failure - SPOF*), substituindo bases de controle centralizadas por uma malha cooperativa (*mesh*) de *brokers* P2P, sensores inteligentes e drones autônomos.
+O **HormuzNet** é uma plataforma de monitoramento marítimo e resposta tática em tempo real para a região estratégica do Estreito de Ormuz. Desenvolvido em **Go**, o projeto implementa uma arquitetura **totalmente distribuída e tolerante a falhas**, substituindo bases de controle centralizadas por uma malha cooperativa (*mesh*) de *brokers* P2P, sensores inteligentes e drones autônomos.
 
 ---
 
 ## 🚀 Diferenciais e Arquitetura
 
-O sistema é dividido em três camadas lógicas que garantem tolerância a falhas, consistência eventual e alta disponibilidade:
+O sistema é dividido em três camadas lógicas que garantem consistência e alta disponibilidade:
 
 ### 1. Camada de Aquisição (UDP Multicast)
-*   **Redundância Nativa:** Os sensores (Radares, Bóias e Estações Meteorológicas) não se conectam individualmente a cada servidor. Em vez disso, publicam dados ambientais e alertas em um endereço de **UDP Multicast** (`224.0.0.1:8080`).
-*   **Tolerância a Perdas:** Projetado sob a premissa de que a leitura mais recente é a mais valiosa, minimizando o *overhead* de retransmissões em conexões instáveis. Todos os *brokers* escutam o grupo multicast e capturam a telemetria em tempo real.
+*   **Redundância Nativa:** Os sensores (Radares, Bóias, Sonar) não se conectam individualmente a servidores específicos. Eles publicam leituras em um endereço **Multicast UDP** (`224.1.2.3:9876`).
+*   **Tolerância a Perdas:** Projetado para ambientes ruidosos. A perda de um pacote UDP não impacta o sistema, visto que sensores enviam leituras frequentes.
 
-### 2. Camada de Sincronização (Malha P2P de Brokers)
-*   **Rede Peer-to-Peer:** Quatro *brokers* dividem o mapa operacional em setores geográficos (Noroeste, Nordeste, Sudoeste, Sudeste). Eles comunicam-se entre si via conexões TCP diretas.
-*   **Relógio Lógico de Lamport:** A ordenação global de ocorrências é garantida através do algoritmo de Lamport. Isso assegura que todos os servidores mantenham filas de prioridade de incidentes absolutamente idênticas e tomem decisões consistentes.
-*   **Exclusão Mútua Distribuída:** Evita que múltiplos drones sejam despachados para o mesmo incidente. O broker detentor da conexão ativa com o drone mais apto efetua o despacho e propaga a exclusão para toda a malha.
+### 2. Camada de Sincronização (Descoberta P2P e Ring Failover)
+*   **Descoberta Dinâmica:** Não há IPs hardcoded. O sistema utiliza um nó Líder (Centro/B9) para Descoberta. Quando os brokers ligam, eles perguntam ao líder quem está online e montam uma malha TCP dinâmica automaticamente.
+*   **Filtro Regional e Ring Failover:** Cada Broker processa eventos de seu próprio setor geográfico. **Se um Broker morrer**, o algoritmo de **Herança em Anel (Ring Failover)** entra em ação. O próximo Broker sobrevivente na sequência assume os sensores da região morta, garantindo que não existam *pontos cegos* no mapa. 
+*   **Relógio de Lamport:** A ordenação global de ocorrências é garantida através do algoritmo de Lamport, assegurando que todos mantenham filas de prioridade idênticas.
 
-### 3. Camada de Atuação (Drones Autônomos com Fallback)
-*   **Conexão Resiliente:** Os drones gerenciam canais TCP persistentes com seus brokers primários. 
-*   **Algoritmo de Fallback Automático:** Caso um broker caia, o drone detecta a perda de conexão e inicia uma varredura para se acoplar ao broker vizinho ativo mais próximo da malha, garantindo que a frota permaneça operando.
-*   **Modelo Probabilístico de Falha:** Para simular as condições hostis do Estreito, existe uma probabilidade configurada de 10% de o drone ser abatido/perdido durante a missão. O sistema detecta a falha e reintroduz a ocorrência na fila de prioridades global automaticamente.
-
----
-
-## 📂 Estrutura do Repositório
-
-```bash
-HormuzNet/
-├── code/                    # Código-fonte do sistema em Go
-│   ├── broker/              # Servidor, Relógio de Lamport e controle P2P
-│   ├── drone/               # Lógica dos Drones e fallback TCP
-│   ├── sensor/              # Emissores de UDP Multicast
-│   └── monitor/             # Dashboard tático Web (WebSockets)
-├── docs/                    # Documentos arquiteturais e de especificação
-│   ├── solucao-hormuznet/   # Documento completo da solução em LaTeX
-│   └── arquitetura_descentralizada.md
-├── images/                  # Assets visuais do repositório
-│   └── arquitetura_hormuz.png
-├── docker-compose.yml       # Orquestração do cluster de simulação
-├── start.sh                 # Script automatizado para inicialização do sistema
-└── README.md                # Este documento de referência
-```
+### 3. Camada de Atuação (Drones Autônomos)
+*   **Exclusão Mútua Simplificada:** O Broker que possui conexão com o drone mais próximo efetua o despacho da ocorrência.
+*   **Modelo de Falha Hostil:** Para simular as condições do Estreito, drones podem ser abatidos/perdidos (probabilidade configurada). O sistema recicla a ocorrência para a fila de prioridades e despacha um substituto.
 
 ---
 
-## 🛠️ Como Executar a Simulação
+## 🛠️ Como Rodar a Simulação (Menu Interativo)
 
-O cluster inteiro pode ser executado e validado localmente de forma automatizada através do Docker.
+Para facilitar a simulação de redes complexas em múltiplas máquinas, desenvolvemos um painel interativo. 
 
 ### Requisitos
-*   [Docker](https://docs.docker.com/) e [Docker Compose](https://docs.docker.com/compose/) instalados.
+*   [Docker](https://docs.docker.com/) e [Docker Compose](https://docs.docker.com/compose/).
+*   (Opcional) Python 3 para o gerador de compose em background.
 
 ### Passos para Inicialização
 
-1.  Clone o repositório e navegue até a raiz do projeto:
+1.  Abra o terminal e execute o menu:
     ```bash
-    cd "HormuzNet"
+    ./menu.sh
     ```
+2.  **Passo a passo no Menu:**
+    *   **Opção 1:** Inicia o Nó Líder (Broker 9) e exibe o IP físico do seu PC na rede.
+    *   **Opção 2:** Cria os outros Brokers (seguidores). O script perguntará o IP do Líder.
+    *   **Opções 3, 4 e 5:** Inicia o Monitor (Dashboard na porta 8082), Drones e Sensores, tudo dinamicamente apontado para a malha principal.
 
-2.  Suba a infraestrutura completa (4 Brokers, 6 Drones Autônomos e 20 Sensores simulados):
-    ```bash
-    docker-compose up --build -d
-    ```
-
-3.  Acesse o painel tático de monitoramento no seu navegador:
-    ```bash
-    http://localhost:8082
-    ```
-
-4.  Para parar a simulação e remover os contêineres:
-    ```bash
-    docker-compose down
-    ```
+> **Modo Destruição (`kill_broker.sh`):** Para testar o *Ring Failover* em tempo real, rode o `./kill_broker.sh`. Ele listará todos os brokers rodando no seu Docker. Digite o nome de um deles e assista a rede perceber a queda e os vizinhos assumirem a carga instantaneamente!
 
 ---
 
 ## 📊 Painel de Monitoramento (WebSocket)
-A interface tática atua como o consolidador visual do Estreito de Ormuz. Utilizando conexões **WebSocket**, o dashboard renderiza dinamicamente:
-*   A posição e status (Em Base, Em Missão, Abatido) dos Drones Autônomos.
-*   A saúde das conexões de rede entre os Brokers da malha.
-*   A leitura em tempo real e distribuição dos Sensores de aquisição.
+A interface tática atua como o consolidador visual do Estreito. Utilizando conexões **WebSocket**, o dashboard renderiza dinamicamente:
+*   Posição, saúde e despacho de Drones.
+*   Comunicação ativa P2P.
+*   Alertas de Sensores e estado dos Brokers.
+
+*(Acesse via: `http://localhost:8082` após subir a Opção 3 no menu)*
 
 ---
 
 ## 📄 Artigo e Documento Técnico
-Uma documentação técnica detalhada contendo a fundamentação matemática do Relógio de Lamport, a modelagem de concorrência concorrente Go, testes de resiliência a falhas de rede e tabelas de performance está disponível no formato LaTeX dentro de:
+Uma documentação técnica detalhada contendo a fundamentação matemática, relógio de Lamport e testes de resiliência está disponível no formato LaTeX dentro de:
 👉 `docs/solucao-hormuznet/principal.tex`
