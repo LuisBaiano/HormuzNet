@@ -52,11 +52,12 @@ def gerar_yaml(mode, count, lider_ip):
             }
 
     elif mode == "monitor":
+        brokers_list = ",".join([f"{lider_ip}:{b['port']}" for b in brokers_base])
         services["monitor"] = {
             "build": {"context": "./code", "dockerfile": "Dockerfile.monitor"},
             "container_name": "hormuznet_monitor",
             "network_mode": "host",
-            "command": [f"-brokers={lider_ip}:6008", "-porta=8082"],
+            "command": [f"-brokers={brokers_list}", "-porta=8085"],
             "restart": "on-failure"
         }
 

@@ -121,6 +121,10 @@ const (
 
 	// Notificação de missão concluída
 	MsgMissaoConcluida TipoMensagemBroker = "MISSAO_CONCLUIDA"
+
+	// Notificações de Failover regional
+	MsgFailover           TipoMensagemBroker = "FAILOVER"
+	MsgFailoverRecuperado TipoMensagemBroker = "FAILOVER_RECUPERADO"
 )
 
 type MensagemBroker struct {

@@ -253,6 +253,8 @@ func (b *Broker) processarLeitura(dados []byte) {
 		return
 	}
 
+	b.logger.Printf("[UDP RECEBIDO] Leitura do Sensor %s, Setor %s, Criticidade %s", leitura.SensorID, leitura.SetorID, leitura.Criticidade.String())
+
 	// Filtro Regional com tolerância a falhas (Anel)
 	if !b.responsavelPorSetor(leitura.SetorID) {
 		return
@@ -326,6 +328,7 @@ func (b *Broker) identificarConexao(conn net.Conn) {
 
 	var md models.MensagemDrone
 	if err := json.Unmarshal(linha, &md); err == nil && md.Tipo == models.DroneRegistro {
+		b.logger.Printf("[DRONE MSG RECEBIDA] Registro do Drone %s na malha local", md.DroneID)
 		b.registrarDroneLocal(md.DroneID, md.DroneInfo, conn)
 		go b.loopLeituraDrone(md.DroneID, conn, scanner)
 		return
@@ -333,6 +336,7 @@ func (b *Broker) identificarConexao(conn net.Conn) {
 
 	var msg models.MensagemBroker
 	if err := json.Unmarshal(linha, &msg); err == nil && (msg.Tipo == models.MsgRegistro || msg.Tipo == models.MsgDiscovery) {
+		b.logger.Printf("[TCP RECEBIDO] Conexão inicial de %s: tipo=%s", msg.BrokerID, msg.Tipo)
 		b.syncLamport(msg.LamportTime)
 		b.registrarVizinho(msg.BrokerID, conn)
 		b.enviarSincGlobal(conn)
@@ -410,6 +414,7 @@ func (b *Broker) loopLeituraDrone(droneID string, conn net.Conn, scanner *bufio.
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 			continue
 		}
+		b.logger.Printf("[DRONE MSG RECEBIDA] Drone %s envia tipo=%s, estado=%s", msg.DroneID, msg.Tipo, msg.NovoEstado)
 		b.processarMensagemDrone(msg)
 	}
 }
@@ -586,7 +591,9 @@ func (b *Broker) tentarDespachar() {
 		}
 
 		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		json.NewEncoder(conn).Encode(cmd)
+		if err := json.NewEncoder(conn).Encode(cmd); err == nil {
+			b.logger.Printf("[DRONE COMANDO ENVIADO] Para drone %s, comando=%s, ocorrencia=%s", droneAlvo, cmd.Tipo, oc.ID)
+		}
 
 		b.logger.Printf("Despacho PRÓ-ATIVO: drone %s → ocorrência %s", droneAlvo, oc.ID)
 
@@ -661,6 +668,7 @@ func (b *Broker) conectarLider(addr string) {
 			conn.Close()
 			continue
 		}
+		b.logger.Printf("[TCP ENVIADO] Para lider %s, mensagem tipo=%s", addr, reg.Tipo)
 
 		b.registrarVizinho(addr, conn)
 		scanner := bufio.NewScanner(conn)
@@ -712,6 +720,7 @@ func (b *Broker) conectarVizinho(addr string, isDiscovery bool) {
 			conn.Close()
 			continue
 		}
+		b.logger.Printf("[TCP ENVIADO] Para vizinho %s, mensagem tipo=%s", addr, reg.Tipo)
 
 		b.logger.Printf("Conectado ao vizinho %s", addr)
 		backoff = 2 * time.Second
@@ -727,6 +736,9 @@ func (b *Broker) conectarVizinho(addr string, isDiscovery bool) {
 			var msg models.MensagemBroker
 			if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 				continue
+			}
+			if msg.Tipo != models.MsgHeartbeat {
+				b.logger.Printf("[TCP RECEBIDO] De %s, mensagem tipo=%s", msg.BrokerID, msg.Tipo)
 			}
 			if msg.BrokerID != "" && msg.BrokerID != idReal {
 				b.vizinhosMu.Lock()
@@ -780,6 +792,9 @@ func (b *Broker) loopLeituraBroker(brokerID string, conn net.Conn, scanner *bufi
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 			continue
 		}
+		if msg.Tipo != models.MsgHeartbeat {
+			b.logger.Printf("[TCP RECEBIDO] De %s, mensagem tipo=%s", msg.BrokerID, msg.Tipo)
+		}
 		b.processarMensagemBroker(msg, conn)
 	}
 }
@@ -802,6 +817,13 @@ func (b *Broker) processarMensagemBroker(msg models.MensagemBroker, conn net.Con
 	if b.brokersMortos[msg.BrokerID] {
 		b.logger.Printf("Broker %s voltou à vida! Retornando o controle do setor %s para ele.", msg.BrokerID, msg.SetorID)
 		b.brokersMortos[msg.BrokerID] = false
+		b.broadcastVizinhos(models.MensagemBroker{
+			Tipo:        models.MsgFailoverRecuperado,
+			BrokerID:    msg.BrokerID,
+			SetorID:     msg.SetorID,
+			Timestamp:   time.Now(),
+			LamportTime: b.tick(),
+		})
 	}
 	b.brokersMortosMu.Unlock()
 
@@ -834,7 +856,9 @@ func (b *Broker) processarMensagemBroker(msg models.MensagemBroker, conn net.Con
 			LamportTime: b.tick(),
 		}
 		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		json.NewEncoder(conn).Encode(resposta)
+		if err := json.NewEncoder(conn).Encode(resposta); err == nil {
+			b.logger.Printf("[TCP ENVIADO] Para novo peer %s, mensagem tipo=%s", peerAddr, resposta.Tipo)
+		}
 
 		// Avisa a todos os outros peers sobre esse novo
 		broadcast := models.MensagemBroker{
@@ -933,7 +957,9 @@ func (b *Broker) enviarSincGlobal(conn net.Conn) {
 			LamportTime: b.tick(),
 		}
 		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		json.NewEncoder(conn).Encode(msg)
+		if err := json.NewEncoder(conn).Encode(msg); err == nil {
+			b.logger.Printf("[TCP ENVIADO] Para peer/monitor, mensagem tipo=%s (sinc drone %s)", msg.Tipo, d.DroneID)
+		}
 	}
 }
 
@@ -966,11 +992,79 @@ func (b *Broker) loopDetectarFalhas() {
 				if !b.brokersMortos[id] {
 					b.logger.Printf("Broker %s presumido morto (sem HB há %s). Ativando rotinas de Failover!", id, agora.Sub(ultimo).Round(time.Second))
 					b.brokersMortos[id] = true
+					go b.verificarEAtivarFailover(id)
 				}
 				b.brokersMortosMu.Unlock()
 			}
 		}
 		b.heartbeatMu.Unlock()
+	}
+}
+
+func (b *Broker) verificarEAtivarFailover(deadBrokerID string) {
+	b.setoresConhecidosMu.RLock()
+	setorMorto, ok := b.setoresConhecidos[deadBrokerID]
+	b.setoresConhecidosMu.RUnlock()
+	if !ok {
+		return
+	}
+
+	b.setoresConhecidosMu.RLock()
+	var todos []string
+	for brokerID := range b.setoresConhecidos {
+		todos = append(todos, brokerID)
+	}
+	b.setoresConhecidosMu.RUnlock()
+
+	encontrouEu := false
+	for _, br := range todos {
+		if br == b.id {
+			encontrouEu = true
+			break
+		}
+	}
+	if !encontrouEu {
+		todos = append(todos, b.id)
+	}
+
+	sort.Strings(todos)
+
+	idxDono := -1
+	for i, br := range todos {
+		if br == deadBrokerID {
+			idxDono = i
+			break
+		}
+	}
+	if idxDono == -1 {
+		return
+	}
+
+	n := len(todos)
+	for i := 1; i <= n; i++ {
+		candidato := todos[(idxDono+i)%n]
+
+		vivo := true
+		if candidato != b.id {
+			b.brokersMortosMu.RLock()
+			vivo = !b.brokersMortos[candidato]
+			b.brokersMortosMu.RUnlock()
+		}
+
+		if vivo {
+			if candidato == b.id {
+				b.logger.Printf("[FAILOVER ATIVADO] Eu (%s) assumo o setor '%s' do broker morto '%s'!", b.id, setorMorto, deadBrokerID)
+				b.broadcastVizinhos(models.MensagemBroker{
+					Tipo:        models.MsgFailover,
+					BrokerID:    b.id,
+					SetorID:     setorMorto,
+					Motivo:      deadBrokerID,
+					Timestamp:   time.Now(),
+					LamportTime: b.tick(),
+				})
+			}
+			break
+		}
 	}
 }
 
@@ -993,6 +1087,10 @@ func (b *Broker) broadcastVizinhos(msg models.MensagemBroker) {
 			conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 			if err := json.NewEncoder(conn).Encode(msg); err != nil {
 				b.logger.Printf("Erro broadcast para %s: %v", id, err)
+			} else {
+				if msg.Tipo != models.MsgHeartbeat {
+					b.logger.Printf("[TCP ENVIADO] Para broker/peer %s, mensagem tipo=%s", id, msg.Tipo)
+				}
 			}
 		}()
 	}

@@ -174,7 +174,9 @@ func (d *Drone) loopKeepalive(stop <-chan struct{}) {
 			d.connMu.Lock()
 			if d.encoder != nil {
 				d.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-				d.encoder.Encode(msg)
+				if err := d.encoder.Encode(msg); err == nil {
+					d.logger.Printf("[KEEPALIVE ENVIADO] Drone envia keepalive, posicao=(%.0f, %.0f)", infoCopia.Posicao.X, infoCopia.Posicao.Y)
+				}
 			}
 			d.connMu.Unlock()
 		case <-stop:
@@ -197,6 +199,7 @@ func (d *Drone) processarComandos(conn net.Conn) {
 }
 
 func (d *Drone) executarComando(cmd models.ComandoDrone) {
+	d.logger.Printf("[COMANDO RECEBIDO] Broker ordena ação tipo=%s, ocorrencia=%s, alvo=(%.0f, %.0f)", cmd.Tipo, cmd.OcorrenciaID, cmd.PosicaoAlvo.X, cmd.PosicaoAlvo.Y)
 	switch cmd.Tipo {
 	case models.CmdDespacharDrone:
 		d.iniciarMissao(cmd.OcorrenciaID, cmd.PosicaoAlvo)
@@ -313,6 +316,8 @@ func (d *Drone) notificarEstado(estado models.EstadoDrone, ocID string, pos mode
 	defer d.connMu.Unlock()
 	if d.encoder != nil {
 		d.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		d.encoder.Encode(msg)
+		if err := d.encoder.Encode(msg); err == nil {
+			d.logger.Printf("[ESTADO ENVIADO] Drone notifica estado=%s, ocorrencia=%s, posicao=(%.0f, %.0f)", estado, ocID, pos.X, pos.Y)
+		}
 	}
 }

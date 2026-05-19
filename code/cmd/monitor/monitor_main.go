@@ -161,6 +161,7 @@ type EstadoGlobal struct {
 	Brokers     []BrokerStatus                    `json:"brokers"`
 	Eventos     []EventoLog                       `json:"eventos"`
 	Ocorrencias map[string]OcorrenciaDetalhada    `json:"ocorrencias"`
+	Failovers   map[string]string                 `json:"failovers"`
 }
 
 var (
@@ -169,6 +170,7 @@ var (
 	brokers     = make(map[string]*BrokerStatus)
 	eventos     []EventoLog
 	ocorrencias = make(map[string]OcorrenciaDetalhada)
+	failovers   = make(map[string]string)
 )
 
 func addEvento(tipo, msg, nivel string) {
@@ -201,9 +203,13 @@ func snapshot() []byte {
 	for k, v := range ocorrencias {
 		o[k] = v
 	}
+	fo := make(map[string]string, len(failovers))
+	for k, v := range failovers {
+		fo[k] = v
+	}
 	estadoMu.RUnlock()
 
-	estado := EstadoGlobal{Drones: d, Brokers: blist, Eventos: ev, Ocorrencias: o}
+	estado := EstadoGlobal{Drones: d, Brokers: blist, Eventos: ev, Ocorrencias: o, Failovers: fo}
 	data, _ := json.Marshal(estado)
 	return data
 }
@@ -347,6 +353,18 @@ func processarMensagem(msg models.MensagemBroker, addr string) {
 				fmt.Sprintf("Ocorrência %s [%s] em %s", msg.Ocorrencia.ID,
 					msg.Ocorrencia.Criticidade, msg.Ocorrencia.SetorOrigem), "warn")
 		}
+
+	case models.MsgFailover:
+		estadoMu.Lock()
+		failovers[msg.SetorID] = msg.BrokerID
+		estadoMu.Unlock()
+		addEvento("FAILOVER", fmt.Sprintf("Broker %s assumiu setor %s (failover)", msg.BrokerID, msg.SetorID), "danger")
+
+	case models.MsgFailoverRecuperado:
+		estadoMu.Lock()
+		delete(failovers, msg.SetorID)
+		estadoMu.Unlock()
+		addEvento("RECUPERACAO", fmt.Sprintf("Broker %s recuperou setor %s", msg.BrokerID, msg.SetorID), "info")
 	}
 }
 
@@ -376,7 +394,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	brokersFlag := flag.String("brokers", "localhost:6000", "Endereços TCP dos brokers (vírgula)")
-	porta := flag.String("porta", "8082", "Porta HTTP do dashboard")
+	porta := flag.String("porta", "8085", "Porta HTTP do dashboard")
 	flag.Parse()
 
 	addrs := strings.Split(*brokersFlag, ",")
@@ -806,7 +824,7 @@ body::before {
 
 <script>
 // ── Estado ────────────────────────────────────────────────────────────────────
-let estado = {drones: {}, brokers: [], eventos: []};
+let estado = {drones: {}, brokers: [], eventos: [], failovers: {}};
 let ws = null;
 const COR = {
   DISPONIVEL:'#00e87a', DESPACHADO:'#ffb800', EM_MISSAO:'#00c2ff',
@@ -959,33 +977,48 @@ function renderMapa() {
   ctx.beginPath(); ctx.moveTo(0,H/2); ctx.lineTo(W,H/2); ctx.stroke();
 
   // Zonas dos Brokers (Grade 3x3 vazada no centro)
-  const drawSec = (c, x, y, w, h) => {
-    ctx.fillStyle = c; ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = c.replace('0.15', '0.5'); ctx.strokeRect(x, y, w, h);
+  const drawSec = (c, x, y, w, h, setorName) => {
+    let fill = c;
+    let stroke = c.replace('0.15', '0.5');
+    const failoverBroker = estado.failovers ? estado.failovers[setorName] : null;
+    if (failoverBroker) {
+      fill = 'rgba(255, 68, 68, 0.25)'; // Highlighted red for failover
+      stroke = 'rgba(255, 68, 68, 0.8)';
+    }
+    ctx.fillStyle = fill; ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = stroke; ctx.strokeRect(x, y, w, h);
   };
   const cw = W/3, ch = H/3;
-  drawSec('rgba(0, 232, 122, 0.15)', 0, 0, cw, ch); // NW
-  drawSec('rgba(0, 194, 255, 0.15)', cw, 0, cw, ch); // N
-  drawSec('rgba(255, 184, 0, 0.15)', cw*2, 0, cw, ch); // NE
-  drawSec('rgba(255, 59, 59, 0.15)', cw*2, ch, cw, ch); // E
-  drawSec('rgba(0, 232, 122, 0.15)', cw*2, ch*2, cw, ch); // SE
-  drawSec('rgba(0, 194, 255, 0.15)', cw, ch*2, cw, ch); // S
-  drawSec('rgba(255, 184, 0, 0.15)', 0, ch*2, cw, ch); // SW
-  drawSec('rgba(255, 59, 59, 0.15)', 0, ch, cw, ch); // W
-  drawSec('rgba(100, 100, 100, 0.15)', cw, ch, cw, ch); // CENTRO
+  drawSec('rgba(0, 232, 122, 0.15)', 0, 0, cw, ch, 'Setor_Noroeste'); // NW
+  drawSec('rgba(0, 194, 255, 0.15)', cw, 0, cw, ch, 'Setor_Norte'); // N
+  drawSec('rgba(255, 184, 0, 0.15)', cw*2, 0, cw, ch, 'Setor_Nordeste'); // NE
+  drawSec('rgba(255, 59, 59, 0.15)', cw*2, ch, cw, ch, 'Setor_Leste'); // E
+  drawSec('rgba(0, 232, 122, 0.15)', cw*2, ch*2, cw, ch, 'Setor_Sudeste'); // SE
+  drawSec('rgba(0, 194, 255, 0.15)', cw, ch*2, cw, ch, 'Setor_Sul'); // S
+  drawSec('rgba(255, 184, 0, 0.15)', 0, ch*2, cw, ch, 'Setor_Sudoeste'); // SW
+  drawSec('rgba(255, 59, 59, 0.15)', 0, ch, cw, ch, 'Setor_Oeste'); // W
+  drawSec('rgba(100, 100, 100, 0.15)', cw, ch, cw, ch, 'Setor_Centro'); // CENTRO
+
+  const getLabel = (defaultText, setorName) => {
+    const failoverBroker = estado.failovers ? estado.failovers[setorName] : null;
+    if (failoverBroker) {
+      return defaultText + ' (FAILOVER: ' + failoverBroker + ')';
+    }
+    return defaultText;
+  };
 
   ctx.fillStyle = 'rgba(255,255,255,0.8)';
   ctx.font = 'bold 11px Orbitron';
   ctx.textAlign = 'center';
-  ctx.fillText('B1: NOROESTE', cw/2, ch/2);
-  ctx.fillText('B2: NORTE', cw*1.5, ch/2);
-  ctx.fillText('B3: NORDESTE', cw*2.5, ch/2);
-  ctx.fillText('B4: LESTE', cw*2.5, ch*1.5);
-  ctx.fillText('B5: SUDESTE', cw*2.5, ch*2.5);
-  ctx.fillText('B6: SUL', cw*1.5, ch*2.5);
-  ctx.fillText('B7: SUDOESTE', cw/2, ch*2.5);
-  ctx.fillText('B8: OESTE', cw/2, ch*1.5);
-  ctx.fillText('B9: CENTRO', cw*1.5, ch*1.5);
+  ctx.fillText(getLabel('B1: NOROESTE', 'Setor_Noroeste'), cw/2, ch/2);
+  ctx.fillText(getLabel('B2: NORTE', 'Setor_Norte'), cw*1.5, ch/2);
+  ctx.fillText(getLabel('B3: NORDESTE', 'Setor_Nordeste'), cw*2.5, ch/2);
+  ctx.fillText(getLabel('B4: LESTE', 'Setor_Leste'), cw*2.5, ch*1.5);
+  ctx.fillText(getLabel('B5: SUDESTE', 'Setor_Sudeste'), cw*2.5, ch*2.5);
+  ctx.fillText(getLabel('B6: SUL', 'Setor_Sul'), cw*1.5, ch*2.5);
+  ctx.fillText(getLabel('B7: SUDOESTE', 'Setor_Sudoeste'), cw/2, ch*2.5);
+  ctx.fillText(getLabel('B8: OESTE', 'Setor_Oeste'), cw/2, ch*1.5);
+  ctx.fillText(getLabel('B9: CENTRO', 'Setor_Centro'), cw*1.5, ch*1.5);
 
   const dlist = Object.values(estado.drones || {});
   if (!dlist.length) {

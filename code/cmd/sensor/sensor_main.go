@@ -52,6 +52,8 @@ func main() {
 		_, err = conn.Write(dados)
 		if err != nil {
 			log.Printf("Erro ao enviar dados: %v", err)
+		} else {
+			log.Printf("[DADO ENVIADO] Sensor %s envia leitura tipo=%s, crit=%s, valor=%.2f %s", leitura.SensorID, leitura.Tipo, leitura.Criticidade.String(), leitura.Valor, leitura.Unidade)
 		}
 	}
 }

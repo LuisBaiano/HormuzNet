@@ -54,7 +54,7 @@ while true; do
             LIDER_IP=${LIDER_IP:-$LOCAL_IP}
             python3 code/generate_dynamic.py --mode monitor --lider "$LIDER_IP"
             docker compose -f docker-compose-temp.yml up -d
-            echo -e "\n\e[1;32m[SUCESSO] Monitor rodando! Acesse: http://localhost:8082 ou http://$LOCAL_IP:8082\e[0m"
+            echo -e "\n\e[1;32m[SUCESSO] Monitor rodando! Acesse: http://localhost:8085 or http://$LOCAL_IP:8085\e[0m"
             read -p "Pressione Enter para continuar..."
             ;;
         4)
