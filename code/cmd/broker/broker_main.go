@@ -75,12 +75,15 @@ type Broker struct {
 
 func novoBroker(id, setorID, portaUDP, portaTCP string) *Broker {
 	return &Broker{
-		id:           id,
-		setorID:      setorID,
-		portaUDP:     portaUDP,
-		portaTCP:     portaTCP,
-		lamport:      0,
-		fila:         fila.Nova(),
+		id:                id,
+		setorID:           setorID,
+		portaUDP:          portaUDP,
+		portaTCP:          portaTCP,
+		lamport:           0,
+		fila:              fila.Nova(),
+		dronesLocais:      make(map[string]net.Conn),
+		drones:            make(map[string]models.InfoDrone),
+		vizinhos:          make(map[string]net.Conn),
 		ultimoHB:          make(map[string]time.Time),
 		atendidos:         make(map[string]bool),
 		ocorrencias:       make(map[string]models.Ocorrencia),
