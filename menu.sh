@@ -34,7 +34,7 @@ while true; do
         1)
             echo -e "\n\e[1;32m=> Iniciando o Broker Líder...\e[0m"
             python3 code/generate_dynamic.py --mode lider
-            docker compose -f docker-compose-temp.yml up -d
+            docker compose -f docker-compose-temp.yml up -d --build
             echo -e "\n\e[1;32m[SUCESSO] Líder rodando! O IP deste Líder para os outros PCs é: \e[1;37m$LOCAL_IP\e[0m"
             read -p "Pressione Enter para continuar..."
             ;;
@@ -44,7 +44,7 @@ while true; do
             LIDER_IP=${LIDER_IP:-$LOCAL_IP}
             read -p "Quantos brokers você quer subir neste PC? (1 a 8): " COUNT
             python3 code/generate_dynamic.py --mode brokers --count "$COUNT" --lider "$LIDER_IP"
-            docker compose -f docker-compose-temp.yml up -d
+            docker compose -f docker-compose-temp.yml up -d --build
             echo -e "\n\e[1;32m[SUCESSO] Subidos $COUNT brokers apontando para o Líder $LIDER_IP!\e[0m"
             read -p "Pressione Enter para continuar..."
             ;;
@@ -53,7 +53,7 @@ while true; do
             read -p "Qual é o IP do Líder? (Deixe em branco para usar $LOCAL_IP): " LIDER_IP
             LIDER_IP=${LIDER_IP:-$LOCAL_IP}
             python3 code/generate_dynamic.py --mode monitor --lider "$LIDER_IP"
-            docker compose -f docker-compose-temp.yml up -d
+            docker compose -f docker-compose-temp.yml up -d --build
             echo -e "\n\e[1;32m[SUCESSO] Monitor rodando! Acesse: http://localhost:8085 or http://$LOCAL_IP:8085\e[0m"
             read -p "Pressione Enter para continuar..."
             ;;
@@ -63,7 +63,7 @@ while true; do
             LIDER_IP=${LIDER_IP:-$LOCAL_IP}
             read -p "Quantos Drones você quer subir?: " COUNT
             python3 code/generate_dynamic.py --mode drones --count "$COUNT" --lider "$LIDER_IP"
-            docker compose -f docker-compose-temp.yml up -d
+            docker compose -f docker-compose-temp.yml up -d --build
             echo -e "\n\e[1;32m[SUCESSO] Subidos $COUNT Drones!\e[0m"
             read -p "Pressione Enter para continuar..."
             ;;
@@ -73,7 +73,7 @@ while true; do
             LIDER_IP=${LIDER_IP:-$LOCAL_IP}
             read -p "Quantos setores (brokers) você quer cobrir com sensores? (1 a 9): " COUNT
             python3 code/generate_dynamic.py --mode sensores --count "$COUNT" --lider "$LIDER_IP"
-            docker compose -f docker-compose-temp.yml up -d
+            docker compose -f docker-compose-temp.yml up -d --build
             echo -e "\n\e[1;32m[SUCESSO] Sensores criados!\e[0m"
             read -p "Pressione Enter para continuar..."
             ;;
