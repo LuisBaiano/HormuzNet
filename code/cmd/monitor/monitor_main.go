@@ -302,6 +302,23 @@ func processarMensagem(msg models.MensagemBroker, addr string) {
 	estadoMu.Unlock()
 
 	switch msg.Tipo {
+	case models.MsgPeerList:
+		for _, peer := range msg.Peers {
+			estadoMu.Lock()
+			_, ok := brokers[peer]
+			if !ok {
+				brokers[peer] = &BrokerStatus{
+					ID:   peer,
+					Addr: peer,
+				}
+				estadoMu.Unlock()
+				log.Printf("[MONITOR] Novo broker descoberto via Líder: %s. Conectando...", peer)
+				go conectarBroker(peer)
+			} else {
+				estadoMu.Unlock()
+			}
+		}
+
 	case models.MsgSincDrone:
 		if msg.Drone == nil {
 			return

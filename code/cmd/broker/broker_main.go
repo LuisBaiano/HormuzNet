@@ -342,6 +342,25 @@ func (b *Broker) identificarConexao(conn net.Conn) {
 		b.registrarVizinho(msg.BrokerID, conn)
 		b.enviarSincGlobal(conn)
 		
+		if strings.HasPrefix(msg.BrokerID, "MONITOR-") {
+			b.peersConhecidosMu.Lock()
+			listaPeers := make([]string, 0, len(b.peersConhecidos))
+			for p := range b.peersConhecidos {
+				listaPeers = append(listaPeers, p)
+			}
+			b.peersConhecidosMu.Unlock()
+
+			resposta := models.MensagemBroker{
+				Tipo:        models.MsgPeerList,
+				BrokerID:    b.id,
+				Peers:       listaPeers,
+				Timestamp:   time.Now(),
+				LamportTime: b.tick(),
+			}
+			conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+			json.NewEncoder(conn).Encode(resposta)
+		}
+		
 		// Trata as mensagens iniciais e entra no loop
 		b.processarMensagemBroker(msg, conn)
 		go b.loopLeituraBroker(msg.BrokerID, conn, scanner)
