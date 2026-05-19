@@ -858,6 +858,17 @@ body::before {
 // ── Estado ────────────────────────────────────────────────────────────────────
 let estado = {drones: {}, brokers: [], eventos: [], failovers: {}};
 let ws = null;
+
+function formatTime(isoStr) {
+  if (!isoStr || isoStr.startsWith('0001-01-01')) return '--';
+  try {
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return '--';
+    return d.toLocaleTimeString('pt-BR');
+  } catch (e) {
+    return '--';
+  }
+}
 const COR = {
   DISPONIVEL:'#00e87a', DESPACHADO:'#ffb800', EM_MISSAO:'#00c2ff',
   RETORNANDO:'#4a7060', ABATIDO:'#ff3b3b', REALOCANDO:'#ffb800'
@@ -920,7 +931,7 @@ function renderOcorrencias() {
 
   cont.innerHTML = olist.map(o => {
     const stClass = 'st-' + o.status.toLowerCase();
-    const hora = o.timestamp ? new Date(o.timestamp).toLocaleTimeString('pt-BR') : '--';
+    const hora = formatTime(o.timestamp);
     return '<tr>'
       + '<td>' + hora + '</td>'
       + '<td style="font-size:.65rem;color:var(--dim)">' + o.id + '</td>'
@@ -960,7 +971,7 @@ function renderBrokers() {
   document.getElementById('cnt-brokers').textContent = blist.length;
   cont.innerHTML = blist.map(b => {
     const id = b.id || b.addr;
-    const hb = b.ultimo_hb ? new Date(b.ultimo_hb).toLocaleTimeString('pt-BR') : '--';
+    const hb = formatTime(b.ultimo_hb);
     return '<div class="broker-card">'
       + '<div class="br-led' + (b.vivo ? ' on' : '') + '"></div>'
       + '<div class="br-info">'
@@ -976,7 +987,7 @@ function renderLog() {
   const cont = document.getElementById('log-eventos');
   const evs = (estado.eventos || []).slice().reverse().slice(0, 40);
   cont.innerHTML = evs.map(e => {
-    const hora = e.timestamp ? new Date(e.timestamp).toLocaleTimeString('pt-BR') : '--';
+    const hora = formatTime(e.timestamp);
     return '<div class="log-item">'
       + '<span class="log-hora">' + hora + '</span>'
       + '<span class="log-tipo ' + e.nivel + '">' + e.tipo + '</span>'
