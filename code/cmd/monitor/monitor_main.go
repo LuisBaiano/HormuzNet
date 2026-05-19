@@ -142,18 +142,18 @@ type BrokerStatus struct {
 }
 
 type EventoLog struct {
-	Hora     string `json:"hora"`
-	Tipo     string `json:"tipo"`
-	Mensagem string `json:"mensagem"`
-	Nivel    string `json:"nivel"` // info | warn | danger
+	Timestamp time.Time `json:"timestamp"`
+	Tipo      string    `json:"tipo"`
+	Mensagem  string    `json:"mensagem"`
+	Nivel     string    `json:"nivel"` // info | warn | danger
 }
 
 type OcorrenciaDetalhada struct {
-	ID          string `json:"id"`
-	Tipo        string `json:"tipo"`
-	Criticidade string `json:"criticidade"`
-	Status      string `json:"status"`
-	Hora        string `json:"hora"`
+	ID          string    `json:"id"`
+	Tipo        string    `json:"tipo"`
+	Criticidade string    `json:"criticidade"`
+	Status      string    `json:"status"`
+	Timestamp   time.Time `json:"timestamp"`
 }
 
 type EstadoGlobal struct {
@@ -176,10 +176,10 @@ var (
 func addEvento(tipo, msg, nivel string) {
 	estadoMu.Lock()
 	eventos = append(eventos, EventoLog{
-		Hora:     time.Now().Format("15:04:05"),
-		Tipo:     tipo,
-		Mensagem: msg,
-		Nivel:    nivel,
+		Timestamp: time.Now(),
+		Tipo:      tipo,
+		Mensagem:  msg,
+		Nivel:     nivel,
 	})
 	if len(eventos) > 100 {
 		eventos = eventos[len(eventos)-100:]
@@ -377,7 +377,7 @@ func processarMensagem(msg models.MensagemBroker, addr string) {
 					Tipo:        msg.Ocorrencia.Tipo,
 					Criticidade: msg.Ocorrencia.Criticidade.String(),
 					Status:      "ESPERA",
-					Hora:        msg.Ocorrencia.Timestamp.Format("15:04:05"),
+					Timestamp:   msg.Ocorrencia.Timestamp,
 				}
 			}
 			estadoMu.Unlock()
@@ -920,8 +920,9 @@ function renderOcorrencias() {
 
   cont.innerHTML = olist.map(o => {
     const stClass = 'st-' + o.status.toLowerCase();
+    const hora = o.timestamp ? new Date(o.timestamp).toLocaleTimeString('pt-BR') : '--';
     return '<tr>'
-      + '<td>' + o.hora + '</td>'
+      + '<td>' + hora + '</td>'
       + '<td style="font-size:.65rem;color:var(--dim)">' + o.id + '</td>'
       + '<td>' + o.tipo.toUpperCase() + '</td>'
       + '<td style="color:' + (o.criticidade==='ALTA'?'var(--red)':'var(--textdim)') + '">' + o.criticidade + '</td>'
@@ -974,13 +975,14 @@ function renderBrokers() {
 function renderLog() {
   const cont = document.getElementById('log-eventos');
   const evs = (estado.eventos || []).slice().reverse().slice(0, 40);
-  cont.innerHTML = evs.map(e =>
-    '<div class="log-item">'
-    + '<span class="log-hora">' + e.hora + '</span>'
-    + '<span class="log-tipo ' + e.nivel + '">' + e.tipo + '</span>'
-    + '<span class="log-msg">' + e.mensagem + '</span>'
-    + '</div>'
-  ).join('');
+  cont.innerHTML = evs.map(e => {
+    const hora = e.timestamp ? new Date(e.timestamp).toLocaleTimeString('pt-BR') : '--';
+    return '<div class="log-item">'
+      + '<span class="log-hora">' + hora + '</span>'
+      + '<span class="log-tipo ' + e.nivel + '">' + e.tipo + '</span>'
+      + '<span class="log-msg">' + e.mensagem + '</span>'
+      + '</div>';
+  }).join('');
 }
 
 // ── Mapa Tático ───────────────────────────────────────────────────────────────
