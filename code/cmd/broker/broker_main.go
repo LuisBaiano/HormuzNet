@@ -619,7 +619,9 @@ func (b *Broker) tentarDespachar() {
 
 		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 		if err := json.NewEncoder(conn).Encode(cmd); err != nil {
-			b.logger.Printf("Erro ao enviar comando para drone %s: %v. Fechando conexão.", droneAlvo, err)
+			if !strings.Contains(err.Error(), "use of closed network connection") {
+				b.logger.Printf("Erro ao enviar comando para drone %s: %v. Fechando conexão.", droneAlvo, err)
+			}
 			conn.Close()
 
 			// Re-enfileira a ocorrencia
@@ -767,7 +769,11 @@ func (b *Broker) conectarVizinho(addr string, isDiscovery bool) {
 
 		scanner := bufio.NewScanner(conn)
 		idReal := chaveTemp
-		for scanner.Scan() {
+		for {
+			conn.SetReadDeadline(time.Now().Add(heartbeatTimeout))
+			if !scanner.Scan() {
+				break
+			}
 			var msg models.MensagemBroker
 			if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 				continue
@@ -822,7 +828,11 @@ func (b *Broker) loopLeituraBroker(brokerID string, conn net.Conn, scanner *bufi
 		b.vizinhosMu.Unlock()
 		b.logger.Printf("Broker vizinho desconectado: %s", brokerID)
 	}()
-	for scanner.Scan() {
+	for {
+		conn.SetReadDeadline(time.Now().Add(heartbeatTimeout))
+		if !scanner.Scan() {
+			break
+		}
 		var msg models.MensagemBroker
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 			continue
@@ -893,7 +903,9 @@ func (b *Broker) processarMensagemBroker(msg models.MensagemBroker, conn net.Con
 		}
 		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 		if err := json.NewEncoder(conn).Encode(resposta); err != nil {
-			b.logger.Printf("Erro ao enviar PeerList para %s: %v. Fechando conexão.", peerAddr, err)
+			if !strings.Contains(err.Error(), "use of closed network connection") {
+				b.logger.Printf("Erro ao enviar PeerList para %s: %v. Fechando conexão.", peerAddr, err)
+			}
 			conn.Close()
 		} else {
 			b.logger.Printf("[TCP ENVIADO] Para novo peer %s, mensagem tipo=%s", peerAddr, resposta.Tipo)
@@ -997,7 +1009,9 @@ func (b *Broker) enviarSincGlobal(conn net.Conn) {
 		}
 		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 		if err := json.NewEncoder(conn).Encode(msg); err != nil {
-			b.logger.Printf("Erro ao sincronizar drone %s: %v. Fechando conexão.", d.DroneID, err)
+			if !strings.Contains(err.Error(), "use of closed network connection") {
+				b.logger.Printf("Erro ao sincronizar drone %s: %v. Fechando conexão.", d.DroneID, err)
+			}
 			conn.Close()
 			return
 		} else {
@@ -1133,7 +1147,9 @@ func (b *Broker) broadcastVizinhos(msg models.MensagemBroker) {
 		go func() {
 			conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 			if err := json.NewEncoder(conn).Encode(msg); err != nil {
-				b.logger.Printf("Erro broadcast para %s: %v. Fechando conexão.", id, err)
+				if !strings.Contains(err.Error(), "use of closed network connection") {
+					b.logger.Printf("Erro broadcast para %s: %v. Fechando conexão.", id, err)
+				}
 				conn.Close()
 			} else {
 				if msg.Tipo != models.MsgHeartbeat {
@@ -1153,7 +1169,9 @@ func (b *Broker) enviarParaMonitores(msg models.MensagemBroker) {
 			go func() {
 				conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 				if err := json.NewEncoder(conn).Encode(msg); err != nil {
-					b.logger.Printf("Erro ao encaminhar para monitor %s: %v. Fechando conexão.", id, err)
+					if !strings.Contains(err.Error(), "use of closed network connection") {
+						b.logger.Printf("Erro ao encaminhar para monitor %s: %v. Fechando conexão.", id, err)
+					}
 					conn.Close()
 				}
 			}()

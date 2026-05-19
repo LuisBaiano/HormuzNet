@@ -255,7 +255,11 @@ func conectarBroker(addr string) {
 		addEvento("CONEXAO", fmt.Sprintf("Conectado ao broker %s", addr), "info")
 
 		scanner := bufio.NewScanner(conn)
-		for scanner.Scan() {
+		for {
+			conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+			if !scanner.Scan() {
+				break
+			}
 			var msg models.MensagemBroker
 			if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 				continue
@@ -288,8 +292,14 @@ func processarMensagem(msg models.MensagemBroker, addr string) {
 	// Registra/atualiza o broker que originou a mensagem
 	if msg.BrokerID != "" && !strings.HasPrefix(msg.BrokerID, "MONITOR-") {
 		bID := msg.BrokerID
-		bStatus, ok := brokers[bID]
-		if !ok {
+		var bStatus *BrokerStatus
+		for _, b := range brokers {
+			if b.ID == bID || b.Addr == bID {
+				bStatus = b
+				break
+			}
+		}
+		if bStatus == nil {
 			bStatus = &BrokerStatus{
 				ID:   bID,
 				Addr: bID,
@@ -823,7 +833,7 @@ body::before {
       BROKERS
       <span class="cnt" id="cnt-brokers">0</span>
     </div>
-    <div style="padding:8px;flex-shrink:0" id="lista-brokers"></div>
+    <div style="padding:8px;flex-shrink:0;max-height:240px;overflow-y:auto" id="lista-brokers"></div>
     <div class="panel-title" style="margin-top:4px">LOG DE EVENTOS</div>
     <div class="log-wrap" id="log-eventos"></div>
   </div>
@@ -971,9 +981,7 @@ function renderDrones() {
 function renderBrokers() {
   const cont = document.getElementById('lista-brokers');
   const blist = (estado.brokers || []).slice().sort((a, b) => {
-    const idA = a.id || a.addr;
-    const idB = b.id || b.addr;
-    return idA.localeCompare(idB, undefined, { numeric: true, sensitivity: 'base' });
+    return a.addr.localeCompare(b.addr, undefined, { numeric: true, sensitivity: 'base' });
   });
   document.getElementById('cnt-brokers').textContent = blist.length;
   cont.innerHTML = blist.map(b => {
