@@ -829,7 +829,9 @@ func (b *Broker) loopLeituraBroker(brokerID string, conn net.Conn, scanner *bufi
 		b.logger.Printf("Broker vizinho desconectado: %s", brokerID)
 	}()
 	for {
-		conn.SetReadDeadline(time.Now().Add(heartbeatTimeout))
+		if !strings.HasPrefix(brokerID, "MONITOR-") {
+			conn.SetReadDeadline(time.Now().Add(heartbeatTimeout))
+		}
 		if !scanner.Scan() {
 			break
 		}
