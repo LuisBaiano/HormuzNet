@@ -112,6 +112,10 @@ const (
 	MsgRegistro        TipoMensagemBroker = "REGISTRO"
 	MsgReplicaFila     TipoMensagemBroker = "REPLICA_FILA"
 
+	// Descoberta dinâmica de vizinhos (Líder)
+	MsgDiscovery       TipoMensagemBroker = "DISCOVERY"
+	MsgPeerList        TipoMensagemBroker = "PEER_LIST"
+
 	// Sincronização global de drones entre brokers
 	MsgSincDrone TipoMensagemBroker = "SINC_DRONE"
 
@@ -122,6 +126,7 @@ const (
 type MensagemBroker struct {
 	Tipo        TipoMensagemBroker `json:"tipo"`
 	BrokerID    string             `json:"broker_id"`
+	SetorID     string             `json:"setor_id,omitempty"` // Setor do Broker enviando a mensagem (Failover)
 	Timestamp   time.Time          `json:"timestamp"`
 	LamportTime int                `json:"lamport_time"` // Relógio de Lamport
 
@@ -135,6 +140,9 @@ type MensagemBroker struct {
 
 	// REPLICA_FILA: snapshot de ocorrências pendentes
 	FilaPendente []Ocorrencia `json:"fila_pendente,omitempty"`
+
+	// PEER_LIST: lista de endereços conhecidos na malha
+	Peers []string `json:"peers,omitempty"`
 }
 
 // ── Mensagens Drone↔Broker (TCP) ──────────────────────────────────────────────

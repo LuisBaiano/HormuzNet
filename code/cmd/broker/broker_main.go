@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -55,9 +56,18 @@ type Broker struct {
 
 	atendidosMu sync.Mutex
 	atendidos   map[string]bool
-	
+
 	ocorrenciasMu sync.RWMutex
 	ocorrencias   map[string]models.Ocorrencia
+
+	peersConhecidosMu sync.RWMutex
+	peersConhecidos   map[string]bool // "IP:PORT" -> true
+
+	setoresConhecidosMu sync.RWMutex
+	setoresConhecidos   map[string]string // BrokerID -> SetorID
+
+	brokersMortosMu sync.RWMutex
+	brokersMortos   map[string]bool // BrokerID -> true (mortos)
 
 	logger *log.Logger
 }
@@ -70,13 +80,13 @@ func novoBroker(id, setorID, portaUDP, portaTCP string) *Broker {
 		portaTCP:     portaTCP,
 		lamport:      0,
 		fila:         fila.Nova(),
-		dronesLocais: make(map[string]net.Conn),
-		drones:       make(map[string]models.InfoDrone),
-		vizinhos:     make(map[string]net.Conn),
-		ultimoHB:     make(map[string]time.Time),
-		atendidos:    make(map[string]bool),
-		ocorrencias:  make(map[string]models.Ocorrencia),
-		logger:       log.New(os.Stdout, fmt.Sprintf("[BROKER:%s] ", id), log.LstdFlags),
+		ultimoHB:          make(map[string]time.Time),
+		atendidos:         make(map[string]bool),
+		ocorrencias:       make(map[string]models.Ocorrencia),
+		peersConhecidos:   make(map[string]bool),
+		setoresConhecidos: make(map[string]string),
+		brokersMortos:     make(map[string]bool),
+		logger:            log.New(os.Stdout, fmt.Sprintf("[BROKER:%s] ", id), log.LstdFlags),
 	}
 }
 
@@ -102,13 +112,14 @@ func (b *Broker) syncLamport(recebido int) {
 func main() {
 	id := flag.String("id", "", "ID único do broker (ex: B1)")
 	setor := flag.String("setor", "", "ID do setor (ex: Setor_Norte)")
-	udp := flag.String("udp", "224.0.0.1:8080", "Endereço Multicast UDP para sensores")
+	udp := flag.String("udp", "224.1.2.3:9876", "Endereço Multicast UDP para sensores")
 	tcp := flag.String("tcp", "0.0.0.0:6000", "Porta TCP para drones e brokers")
 	vizStr := flag.String("vizinhos", "", "Endereços TCP de brokers vizinhos (vírgula)")
+	lider := flag.String("lider", "", "IP:PORT do Broker Lider para descoberta (se vazio, assume como lider)")
 	flag.Parse()
 
 	if *id == "" || *setor == "" {
-		fmt.Fprintln(os.Stderr, "Uso: broker -id B1 -setor Setor_Norte [-udp :8080] [-tcp :6000] [-vizinhos IP:6000,IP:6000]")
+		fmt.Fprintln(os.Stderr, "Uso: broker -id B1 -setor Setor_Norte [-udp :8080] [-tcp :6000] [-vizinhos IP:6000,IP:6000] [-lider IP:6000]")
 		os.Exit(1)
 	}
 
@@ -117,8 +128,13 @@ func main() {
 
 	go b.escutarTCP()
 	go b.escutarUDP()
-	if *vizStr != "" {
+	if *lider != "" {
+		b.logger.Printf("Modo Seguidor: Conectando ao Líder de Descoberta em %s", *lider)
+		go b.conectarLider(*lider)
+	} else if *vizStr != "" {
 		go b.conectarVizinhos(*vizStr)
+	} else {
+		b.logger.Printf("Modo Líder: Aguardando brokers se conectarem para descoberta.")
 	}
 	go b.loopHeartbeat()
 	go b.loopDetectarFalhas()
@@ -153,14 +169,92 @@ func (b *Broker) escutarUDP() {
 	}
 }
 
+func (b *Broker) responsavelPorSetor(setorDaLeitura string) bool {
+	// Se é o meu setor, eu sempre sou o responsável principal
+	if setorDaLeitura == b.setorID {
+		return true
+	}
+
+	// Procura quem é o dono original deste setor
+	donoOriginal := ""
+	b.setoresConhecidosMu.RLock()
+	for brokerID, setor := range b.setoresConhecidos {
+		if setor == setorDaLeitura {
+			donoOriginal = brokerID
+			break
+		}
+	}
+	b.setoresConhecidosMu.RUnlock()
+
+	if donoOriginal == "" {
+		return false
+	}
+
+	// O dono original está vivo?
+	b.brokersMortosMu.RLock()
+	donoMorto := b.brokersMortos[donoOriginal]
+	b.brokersMortosMu.RUnlock()
+
+	if !donoMorto {
+		return false // Deixa o dono original cuidar!
+	}
+
+	// Lógica de Ring Failover
+	b.setoresConhecidosMu.RLock()
+	var todos []string
+	for brokerID := range b.setoresConhecidos {
+		todos = append(todos, brokerID)
+	}
+	b.setoresConhecidosMu.RUnlock()
+	
+	encontrouEu := false
+	for _, br := range todos {
+		if br == b.id { encontrouEu = true; break }
+	}
+	if !encontrouEu { todos = append(todos, b.id) }
+
+	sort.Strings(todos)
+
+	idxDono := -1
+	for i, br := range todos {
+		if br == donoOriginal {
+			idxDono = i
+			break
+		}
+	}
+
+	if idxDono == -1 { return false }
+
+	n := len(todos)
+	for i := 1; i <= n; i++ {
+		candidato := todos[(idxDono+i)%n]
+		
+		vivo := true
+		if candidato != b.id {
+			b.brokersMortosMu.RLock()
+			vivo = !b.brokersMortos[candidato]
+			b.brokersMortosMu.RUnlock()
+		}
+
+		if vivo {
+			if candidato == b.id {
+				b.logger.Printf("[FAILOVER ativado] Assumindo leitura do setor morto: %s", setorDaLeitura)
+				return true
+			}
+			return false
+		}
+	}
+	return false
+}
+
 func (b *Broker) processarLeitura(dados []byte) {
 	var leitura models.LeituraSensor
 	if err := json.Unmarshal(dados, &leitura); err != nil {
 		return
 	}
 
-	// Filtro Regional: Broker só atende sensores do seu próprio setor
-	if leitura.SetorID != b.setorID {
+	// Filtro Regional com tolerância a falhas (Anel)
+	if !b.responsavelPorSetor(leitura.SetorID) {
 		return
 	}
 
@@ -238,10 +332,13 @@ func (b *Broker) identificarConexao(conn net.Conn) {
 	}
 
 	var msg models.MensagemBroker
-	if err := json.Unmarshal(linha, &msg); err == nil && msg.Tipo == models.MsgRegistro {
+	if err := json.Unmarshal(linha, &msg); err == nil && (msg.Tipo == models.MsgRegistro || msg.Tipo == models.MsgDiscovery) {
 		b.syncLamport(msg.LamportTime)
 		b.registrarVizinho(msg.BrokerID, conn)
 		b.enviarSincGlobal(conn)
+		
+		// Trata as mensagens iniciais e entra no loop
+		b.processarMensagemBroker(msg, conn)
 		go b.loopLeituraBroker(msg.BrokerID, conn, scanner)
 		return
 	}
@@ -521,17 +618,65 @@ func (b *Broker) loopVerificarOciosidade() {
 
 // ── Brokers vizinhos ──────────────────────────────────────────────────────────
 
-func (b *Broker) conectarVizinhos(enderecos string) {
-	for _, addr := range splitCSV(enderecos) {
-		go b.conectarVizinho(addr)
-	}
-}
-
-func (b *Broker) conectarVizinho(addr string) {
+func (b *Broker) conectarLider(addr string) {
+	// A porta TCP em que ESTE broker escuta
+	_, portaLocal, _ := net.SplitHostPort(b.portaTCP)
+	
 	backoff := 2 * time.Second
 	for {
 		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 		if err != nil {
+			b.logger.Printf("Falha ao conectar no líder %s: %v — retry em %s", addr, err, backoff)
+			time.Sleep(backoff)
+			if backoff < 30*time.Second { backoff *= 2 }
+			continue
+		}
+
+		b.logger.Printf("Conectado ao líder %s! Solicitando Discovery...", addr)
+		reg := models.MensagemBroker{
+			Tipo:        models.MsgDiscovery,
+			BrokerID:    b.id,
+			SetorID:     b.setorID,
+			Motivo:      portaLocal, // Envia porta TCP local para o Líder
+			Timestamp:   time.Now(),
+			LamportTime: b.tick(),
+		}
+		if err := json.NewEncoder(conn).Encode(reg); err != nil {
+			conn.Close()
+			continue
+		}
+
+		b.registrarVizinho(addr, conn)
+		scanner := bufio.NewScanner(conn)
+		go b.loopLeituraBroker("LIDER", conn, scanner)
+		
+		// Trava a rotina até que a conexão com o Líder caia
+		<-make(chan struct{})
+		break
+	}
+}
+
+func (b *Broker) conectarVizinhos(enderecos string) {
+	for _, addr := range splitCSV(enderecos) {
+		go b.conectarVizinho(addr, false)
+	}
+}
+
+func (b *Broker) conectarVizinho(addr string, isDiscovery bool) {
+	backoff := 2 * time.Second
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		if err != nil {
+			if isDiscovery {
+				// Para descoberta dinâmica, desiste após algumas tentativas
+				if backoff > 10*time.Second {
+					b.logger.Printf("Desistindo de conectar ao peer descoberto %s", addr)
+					b.peersConhecidosMu.Lock()
+					delete(b.peersConhecidos, addr)
+					b.peersConhecidosMu.Unlock()
+					return
+				}
+			}
 			b.logger.Printf("Falha ao conectar vizinho %s: %v — retry em %s", addr, err, backoff)
 			time.Sleep(backoff)
 			if backoff < 30*time.Second {
@@ -543,6 +688,7 @@ func (b *Broker) conectarVizinho(addr string) {
 		reg := models.MensagemBroker{
 			Tipo:        models.MsgRegistro,
 			BrokerID:    b.id,
+			SetorID:     b.setorID,
 			Timestamp:   time.Now(),
 			LamportTime: b.tick(),
 		}
@@ -573,13 +719,22 @@ func (b *Broker) conectarVizinho(addr string) {
 				b.vizinhosMu.Unlock()
 				idReal = msg.BrokerID
 			}
-			b.processarMensagemBroker(msg)
+			b.processarMensagemBroker(msg, conn)
 		}
 
 		b.vizinhosMu.Lock()
 		delete(b.vizinhos, idReal)
 		b.vizinhosMu.Unlock()
 		conn.Close()
+		
+		if isDiscovery {
+			b.logger.Printf("Vizinho dinâmico %s desconectou.", addr)
+			b.peersConhecidosMu.Lock()
+			delete(b.peersConhecidos, addr)
+			b.peersConhecidosMu.Unlock()
+			return
+		}
+		
 		b.logger.Printf("Vizinho %s desconectou — reconectando em %s", addr, backoff)
 		time.Sleep(backoff)
 		backoff = 2 * time.Second
@@ -609,20 +764,87 @@ func (b *Broker) loopLeituraBroker(brokerID string, conn net.Conn, scanner *bufi
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 			continue
 		}
-		b.processarMensagemBroker(msg)
+		b.processarMensagemBroker(msg, conn)
 	}
 }
 
-func (b *Broker) processarMensagemBroker(msg models.MensagemBroker) {
+func (b *Broker) processarMensagemBroker(msg models.MensagemBroker, conn net.Conn) {
 	b.syncLamport(msg.LamportTime)
 
 	b.heartbeatMu.Lock()
 	b.ultimoHB[msg.BrokerID] = time.Now()
 	b.heartbeatMu.Unlock()
 
+	// Failover: Registrar setor e reviver broker se estiver morto
+	if msg.SetorID != "" {
+		b.setoresConhecidosMu.Lock()
+		b.setoresConhecidos[msg.BrokerID] = msg.SetorID
+		b.setoresConhecidosMu.Unlock()
+	}
+
+	b.brokersMortosMu.Lock()
+	if b.brokersMortos[msg.BrokerID] {
+		b.logger.Printf("Broker %s voltou à vida! Retornando o controle do setor %s para ele.", msg.BrokerID, msg.SetorID)
+		b.brokersMortos[msg.BrokerID] = false
+	}
+	b.brokersMortosMu.Unlock()
+
 	switch msg.Tipo {
 	case models.MsgHeartbeat:
 		// heartbeat já registrado acima
+	case models.MsgDiscovery:
+		// Registro de novo broker via mecanismo de Líder
+		portaRemota := msg.Motivo
+		host, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+		peerAddr := host + ":" + portaRemota
+		
+		b.peersConhecidosMu.Lock()
+		b.peersConhecidos[peerAddr] = true
+		listaPeers := make([]string, 0, len(b.peersConhecidos))
+		for p := range b.peersConhecidos {
+			if p != peerAddr {
+				listaPeers = append(listaPeers, p)
+			}
+		}
+		b.peersConhecidosMu.Unlock()
+
+		b.logger.Printf("Líder registrou novo peer %s (Broker %s). Enviando lista atualizada.", peerAddr, msg.BrokerID)
+		
+		resposta := models.MensagemBroker{
+			Tipo:        models.MsgPeerList,
+			BrokerID:    b.id,
+			Peers:       listaPeers,
+			Timestamp:   time.Now(),
+			LamportTime: b.tick(),
+		}
+		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		json.NewEncoder(conn).Encode(resposta)
+
+		// Avisa a todos os outros peers sobre esse novo
+		broadcast := models.MensagemBroker{
+			Tipo:        models.MsgPeerList,
+			BrokerID:    b.id,
+			Peers:       []string{peerAddr},
+			Timestamp:   time.Now(),
+			LamportTime: b.tick(),
+		}
+		b.broadcastVizinhos(broadcast)
+		
+	case models.MsgPeerList:
+		// Atualiza lista local de peers conhecidos
+		for _, peer := range msg.Peers {
+			b.peersConhecidosMu.Lock()
+			jaConhece := b.peersConhecidos[peer]
+			if !jaConhece {
+				b.peersConhecidos[peer] = true
+			}
+			b.peersConhecidosMu.Unlock()
+			
+			if !jaConhece {
+				b.logger.Printf("Descoberto novo peer via Líder: %s. Conectando...", peer)
+				go b.conectarVizinho(peer, true) // modoDiscovery = true
+			}
+		}
 	case models.MsgSincDrone:
 		if msg.Drone == nil { return }
 		b.dronesMu.Lock()
@@ -702,15 +924,17 @@ func (b *Broker) enviarSincGlobal(conn net.Conn) {
 // ── Heartbeat e detecção de falhas ────────────────────────────────────────────
 
 func (b *Broker) loopHeartbeat() {
-	ticker := time.NewTicker(heartbeatInterval)
+	ticker := time.NewTicker(heartbeatInterval / 2)
 	defer ticker.Stop()
 	for range ticker.C {
-		b.broadcastVizinhos(models.MensagemBroker{
+		hb := models.MensagemBroker{
 			Tipo:        models.MsgHeartbeat,
 			BrokerID:    b.id,
+			SetorID:     b.setorID,
 			Timestamp:   time.Now(),
 			LamportTime: b.tick(),
-		})
+		}
+		b.broadcastVizinhos(hb)
 	}
 }
 
@@ -722,9 +946,12 @@ func (b *Broker) loopDetectarFalhas() {
 		b.heartbeatMu.Lock()
 		for id, ultimo := range b.ultimoHB {
 			if agora.Sub(ultimo) > heartbeatTimeout {
-				b.logger.Printf("Broker %s presumido morto (sem HB há %s)",
-					id, agora.Sub(ultimo).Round(time.Second))
-				delete(b.ultimoHB, id)
+				b.brokersMortosMu.Lock()
+				if !b.brokersMortos[id] {
+					b.logger.Printf("Broker %s presumido morto (sem HB há %s). Ativando rotinas de Failover!", id, agora.Sub(ultimo).Round(time.Second))
+					b.brokersMortos[id] = true
+				}
+				b.brokersMortosMu.Unlock()
 			}
 		}
 		b.heartbeatMu.Unlock()

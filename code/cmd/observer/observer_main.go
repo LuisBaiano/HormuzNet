@@ -12,7 +12,7 @@ import (
 
 func main() {
 	setor := flag.String("setor", "", "ID do setor para filtrar (ex: Setor_Norte)")
-	brokerAddr := flag.String("broker", "224.0.0.1:8080", "Endereço Multicast UDP dos sensores")
+	brokerAddr := flag.String("broker", "224.1.2.3:9876", "Endereço Multicast UDP dos sensores")
 	flag.Parse()
 
 	if *setor == "" {
