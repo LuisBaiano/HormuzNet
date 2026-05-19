@@ -174,7 +174,10 @@ func (d *Drone) loopKeepalive(stop <-chan struct{}) {
 			d.connMu.Lock()
 			if d.encoder != nil {
 				d.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-				if err := d.encoder.Encode(msg); err == nil {
+				if err := d.encoder.Encode(msg); err != nil {
+					d.logger.Printf("Erro ao enviar keepalive: %v. Fechando conexão.", err)
+					d.conn.Close()
+				} else {
 					d.logger.Printf("[KEEPALIVE ENVIADO] Drone envia keepalive, posicao=(%.0f, %.0f)", infoCopia.Posicao.X, infoCopia.Posicao.Y)
 				}
 			}

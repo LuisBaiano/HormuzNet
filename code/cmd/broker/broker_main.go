@@ -618,29 +618,37 @@ func (b *Broker) tentarDespachar() {
 		}
 
 		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		if err := json.NewEncoder(conn).Encode(cmd); err == nil {
+		if err := json.NewEncoder(conn).Encode(cmd); err != nil {
+			b.logger.Printf("Erro ao enviar comando para drone %s: %v. Fechando conexão.", droneAlvo, err)
+			conn.Close()
+
+			// Re-enfileira a ocorrencia
+			b.atendidosMu.Lock()
+			b.atendidos[oc.ID] = false
+			b.atendidosMu.Unlock()
+			b.fila.Enfileirar(oc)
+		} else {
 			b.logger.Printf("[DRONE COMANDO ENVIADO] Para drone %s, comando=%s, ocorrencia=%s", droneAlvo, cmd.Tipo, oc.ID)
+			b.logger.Printf("Despacho PRÓ-ATIVO: drone %s → ocorrência %s", droneAlvo, oc.ID)
+
+			b.atendidosMu.Lock()
+			b.atendidos[oc.ID] = true
+			b.atendidosMu.Unlock()
+
+			b.dronesMu.RLock()
+			dInfo := b.drones[droneAlvo]
+			b.dronesMu.RUnlock()
+			
+			b.broadcastVizinhos(models.MensagemBroker{
+				Tipo:         models.MsgDroneDespachado,
+				BrokerID:     b.id,
+				DroneID:      droneAlvo,
+				OcorrenciaID: oc.ID,
+				Drone:        &dInfo,
+				Timestamp:    time.Now(),
+				LamportTime:  b.tick(),
+			})
 		}
-
-		b.logger.Printf("Despacho PRÓ-ATIVO: drone %s → ocorrência %s", droneAlvo, oc.ID)
-
-		b.atendidosMu.Lock()
-		b.atendidos[oc.ID] = true
-		b.atendidosMu.Unlock()
-
-		b.dronesMu.RLock()
-		dInfo := b.drones[droneAlvo]
-		b.dronesMu.RUnlock()
-		
-		b.broadcastVizinhos(models.MensagemBroker{
-			Tipo:         models.MsgDroneDespachado,
-			BrokerID:     b.id,
-			DroneID:      droneAlvo,
-			OcorrenciaID: oc.ID,
-			Drone:        &dInfo,
-			Timestamp:    time.Now(),
-			LamportTime:  b.tick(),
-		})
 	}
 }
 
@@ -884,7 +892,10 @@ func (b *Broker) processarMensagemBroker(msg models.MensagemBroker, conn net.Con
 			LamportTime: b.tick(),
 		}
 		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		if err := json.NewEncoder(conn).Encode(resposta); err == nil {
+		if err := json.NewEncoder(conn).Encode(resposta); err != nil {
+			b.logger.Printf("Erro ao enviar PeerList para %s: %v. Fechando conexão.", peerAddr, err)
+			conn.Close()
+		} else {
 			b.logger.Printf("[TCP ENVIADO] Para novo peer %s, mensagem tipo=%s", peerAddr, resposta.Tipo)
 		}
 
@@ -985,7 +996,11 @@ func (b *Broker) enviarSincGlobal(conn net.Conn) {
 			LamportTime: b.tick(),
 		}
 		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		if err := json.NewEncoder(conn).Encode(msg); err == nil {
+		if err := json.NewEncoder(conn).Encode(msg); err != nil {
+			b.logger.Printf("Erro ao sincronizar drone %s: %v. Fechando conexão.", d.DroneID, err)
+			conn.Close()
+			return
+		} else {
 			b.logger.Printf("[TCP ENVIADO] Para peer/monitor, mensagem tipo=%s (sinc drone %s)", msg.Tipo, d.DroneID)
 		}
 	}
@@ -1118,7 +1133,8 @@ func (b *Broker) broadcastVizinhos(msg models.MensagemBroker) {
 		go func() {
 			conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 			if err := json.NewEncoder(conn).Encode(msg); err != nil {
-				b.logger.Printf("Erro broadcast para %s: %v", id, err)
+				b.logger.Printf("Erro broadcast para %s: %v. Fechando conexão.", id, err)
+				conn.Close()
 			} else {
 				if msg.Tipo != models.MsgHeartbeat {
 					b.logger.Printf("[TCP ENVIADO] Para broker/peer %s, mensagem tipo=%s", id, msg.Tipo)
@@ -1137,7 +1153,8 @@ func (b *Broker) enviarParaMonitores(msg models.MensagemBroker) {
 			go func() {
 				conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 				if err := json.NewEncoder(conn).Encode(msg); err != nil {
-					b.logger.Printf("Erro ao encaminhar para monitor %s: %v", id, err)
+					b.logger.Printf("Erro ao encaminhar para monitor %s: %v. Fechando conexão.", id, err)
+					conn.Close()
 				}
 			}()
 		}
