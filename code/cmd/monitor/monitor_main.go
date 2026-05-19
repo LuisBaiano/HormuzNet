@@ -944,8 +944,11 @@ function renderOcorrencias() {
 
 function renderDrones() {
   const cont = document.getElementById('lista-drones');
-  const dlist = Object.values(estado.drones || {})
-    .sort((a,b) => a.drone_id.localeCompare(b.drone_id));
+  const dlist = Object.values(estado.drones || {}).sort((a, b) => {
+    const idA = a.drone_id || '';
+    const idB = b.drone_id || '';
+    return idA.localeCompare(idB, undefined, { numeric: true, sensitivity: 'base' });
+  });
   document.getElementById('cnt-drones').textContent = dlist.length;
   if (!dlist.length) return;
 
@@ -967,7 +970,11 @@ function renderDrones() {
 
 function renderBrokers() {
   const cont = document.getElementById('lista-brokers');
-  const blist = estado.brokers || [];
+  const blist = (estado.brokers || []).slice().sort((a, b) => {
+    const idA = a.id || a.addr;
+    const idB = b.id || b.addr;
+    return idA.localeCompare(idB, undefined, { numeric: true, sensitivity: 'base' });
+  });
   document.getElementById('cnt-brokers').textContent = blist.length;
   cont.innerHTML = blist.map(b => {
     const id = b.id || b.addr;
