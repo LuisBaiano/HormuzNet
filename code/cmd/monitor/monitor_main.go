@@ -284,6 +284,21 @@ func processarMensagem(msg models.MensagemBroker, addr string) {
 			b.ID = msg.BrokerID
 		}
 	}
+
+	// Registra/atualiza o broker que originou a mensagem
+	if msg.BrokerID != "" && !strings.HasPrefix(msg.BrokerID, "MONITOR-") {
+		bID := msg.BrokerID
+		bStatus, ok := brokers[bID]
+		if !ok {
+			bStatus = &BrokerStatus{
+				ID:   bID,
+				Addr: bID,
+			}
+			brokers[bID] = bStatus
+		}
+		bStatus.Vivo = true
+		bStatus.UltimoHB = time.Now()
+	}
 	estadoMu.Unlock()
 
 	switch msg.Tipo {

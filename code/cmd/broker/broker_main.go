@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -801,6 +802,7 @@ func (b *Broker) loopLeituraBroker(brokerID string, conn net.Conn, scanner *bufi
 
 func (b *Broker) processarMensagemBroker(msg models.MensagemBroker, conn net.Conn) {
 	b.syncLamport(msg.LamportTime)
+	b.enviarParaMonitores(msg)
 
 	b.heartbeatMu.Lock()
 	b.ultimoHB[msg.BrokerID] = time.Now()
@@ -1093,6 +1095,22 @@ func (b *Broker) broadcastVizinhos(msg models.MensagemBroker) {
 				}
 			}
 		}()
+	}
+}
+
+func (b *Broker) enviarParaMonitores(msg models.MensagemBroker) {
+	b.vizinhosMu.RLock()
+	defer b.vizinhosMu.RUnlock()
+	for id, conn := range b.vizinhos {
+		if strings.HasPrefix(id, "MONITOR-") {
+			id, conn := id, conn
+			go func() {
+				conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+				if err := json.NewEncoder(conn).Encode(msg); err != nil {
+					b.logger.Printf("Erro ao encaminhar para monitor %s: %v", id, err)
+				}
+			}()
+		}
 	}
 }
 
