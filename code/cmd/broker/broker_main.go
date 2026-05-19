@@ -231,7 +231,11 @@ func (b *Broker) responsavelPorSetor(setorDaLeitura string) bool {
 
 	n := len(todos)
 	for i := 1; i <= n; i++ {
-		candidato := todos[(idxDono+i)%n]
+		idx := (idxDono - i) % n
+		if idx < 0 {
+			idx += n
+		}
+		candidato := todos[idx]
 		
 		vivo := true
 		if candidato != b.id {
@@ -1066,7 +1070,11 @@ func (b *Broker) verificarEAtivarFailover(deadBrokerID string) {
 
 	n := len(todos)
 	for i := 1; i <= n; i++ {
-		candidato := todos[(idxDono+i)%n]
+		idx := (idxDono - i) % n
+		if idx < 0 {
+			idx += n
+		}
+		candidato := todos[idx]
 
 		vivo := true
 		if candidato != b.id {
