@@ -416,8 +416,17 @@ func (b *Broker) loopLeituraDrone(droneID string, conn net.Conn, scanner *bufio.
 	defer func() {
 		conn.Close()
 		b.dronesLocaisMu.Lock()
-		delete(b.dronesLocais, droneID)
+		activeConn := b.dronesLocais[droneID]
+		isActive := (activeConn == conn)
+		if isActive {
+			delete(b.dronesLocais, droneID)
+		}
 		b.dronesLocaisMu.Unlock()
+
+		if !isActive {
+			b.logger.Printf("Conexão antiga do Drone %s encerrada (conexão nova já ativa). Ignorando cleanup.", droneID)
+			return
+		}
 
 		b.logger.Printf("Drone %s perdeu conexão (possível abate)", droneID)
 
@@ -801,7 +810,9 @@ func (b *Broker) conectarVizinho(addr string, isDiscovery bool) {
 		}
 
 		b.vizinhosMu.Lock()
-		delete(b.vizinhos, idReal)
+		if b.vizinhos[idReal] == conn {
+			delete(b.vizinhos, idReal)
+		}
 		b.vizinhosMu.Unlock()
 		conn.Close()
 		
@@ -873,9 +884,13 @@ func (b *Broker) loopLeituraBroker(brokerID string, conn net.Conn, scanner *bufi
 	defer func() {
 		conn.Close()
 		b.vizinhosMu.Lock()
-		delete(b.vizinhos, brokerID)
+		if b.vizinhos[brokerID] == conn {
+			delete(b.vizinhos, brokerID)
+			b.logger.Printf("Broker vizinho desconectado: %s", brokerID)
+		} else {
+			b.logger.Printf("Conexão antiga do Broker vizinho %s encerrada (conexão nova já ativa). Ignorando cleanup.", brokerID)
+		}
 		b.vizinhosMu.Unlock()
-		b.logger.Printf("Broker vizinho desconectado: %s", brokerID)
 	}()
 	for {
 		if !strings.HasPrefix(brokerID, "MONITOR-") {

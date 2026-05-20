@@ -103,6 +103,8 @@ Para facilitar a simulação de redes complexas em múltiplas máquinas, desenvo
     *   **Opções 3, 4 e 5:** Inicia o Monitor (Dashboard na porta 8085), Drones e Sensores, tudo dinamicamente apontado para a malha principal.
 
 > **Modo Destruição (`eliminar.sh`):** Para testar resiliência e failover em tempo real, rode o `./eliminar.sh`. Ele listará todos os contêineres ativos do HormuzNet (brokers, drones, sensores) com números identificadores. Digite o número (ou múltiplos números separados por espaço) dos contêineres que deseja derrubar e observe a adaptação e o replanejamento da rede de forma imediata!
+>
+> **Modo Janelas de Terminal (`terminais.sh`):** Para acompanhar os logs individuais de cada broker, drone ou sensor em tempo real, execute `./terminais.sh` para abrir terminais dedicados para cada contêiner ativo.
 
 ---
 
