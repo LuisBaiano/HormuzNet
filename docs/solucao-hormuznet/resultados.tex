@@ -1,6 +1,6 @@
 \subsection{Ambiente de Testes}
 
-A validação do HormuzNet foi conduzida utilizando o \textit{Docker Compose} para simular um ambiente distribuído em rede local. Foram instanciados 4 \textit{brokers}, 6 drones autônomos e 20 sensores. O monitoramento foi realizado através do dashboard tático acessível via navegador.
+A validação do HormuzNet foi conduzida utilizando o \textit{Docker Compose} para simular um ambiente distribuído em rede local. Foram instanciados 9 \textit{brokers}, 7 drones autônomos e 18 sensores (2 para cada setor). O monitoramento foi realizado através do dashboard tático acessível via navegador na porta 8085.
 
 \subsection{Análise de Resiliência e Consistência}
 
@@ -14,7 +14,7 @@ A Tabela~\ref{tab:resiliencia} apresenta os resultados dos testes de estresse e 
     \toprule
     \textbf{ID} & \textbf{Cenário de Falha} & \textbf{Resposta do Sistema} & \textbf{Status} \\
     \midrule
-    TR-01 & Queda do Broker NW & Drones NW realizam \textit{fallback} para Broker NE & OK \\
+    TR-01 & Queda do Broker B3 (Nordeste) & B2 assume Setor Nordeste via Ring Failover; drones fazem \textit{fallback} & OK \\
     TR-02 & Sensor Multicast & Alerta recebido simultaneamente por todos os brokers & OK \\
     TR-03 & Drone Abatido & Broker detecta perda e reenvia alerta para a fila global & OK \\
     TR-04 & Conflito Lamport & Brokers ordenam ocorrências identicamente via timestamps & OK \\
@@ -46,6 +46,6 @@ As métricas de latência e processamento foram coletadas durante uma simulaçã
 
 \subsection{Discussão dos Resultados}
 
-Os experimentos demonstraram que a descentralização atingiu o objetivo de eliminar SPOFs. A queda de um \textit{broker} não interrompeu o monitoramento de sua região, pois o \textit{fallback} dos drones para nós vizinhos ocorreu em menos de 1 segundo. A consistência garantida pelo algoritmo de Lamport foi fundamental para evitar que múltiplos drones atendessem a mesma ocorrência, validando a eficácia da exclusão mútua distribuída implementada.
+Os experimentos demonstraram que a descentralização atingiu o objetivo de eliminar SPOFs. A queda de um \textit{broker} (ex: B3) não interrompeu o monitoramento de sua região, pois o vizinho imediato (B2) assumiu a herança do setor órfão via Ring Failover em tempo real, enquanto o \textit{fallback} dos drones para nós vizinhos ocorreu sem perdas. A consistência garantida pelo algoritmo de Lamport e pela exclusão mútua distribuída (ownership da conexão TCP de cada drone) evitou que múltiplos drones atendessem a mesma ocorrência. Adicionalmente, a de-duplicação de eventos implementada no Monitor permitiu manter a interface tática limpa e livre de duplicatas de fofoca, mesmo sob alta carga de ocorrências concorrentes.
 
 A principal limitação observada foi a escalabilidade do \textit{multicast} em redes que não suportam IGMP de forma eficiente, o que poderia restringir o sistema em ambientes de rede WAN complexos. Contudo, no escopo de uma rede de monitoramento regional, a solução mostrou-se extremamente robusta.
