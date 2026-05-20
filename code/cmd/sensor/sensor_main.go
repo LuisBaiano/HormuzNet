@@ -1,3 +1,9 @@
+/*
+Este arquivo implementa os Sensores Simulados do HormuzNet.
+Ele emula os dispositivos de detecção física (radares, sonares, boias inteligentes, câmeras e meteorológicos).
+Cada sensor gera dados e níveis de criticidade aleatórios de acordo com sua tipagem (simulando
+ocorrências na área marítima) e os transmite periodicamente em broadcast via UDP Multicast.
+*/
 package main
 
 import (

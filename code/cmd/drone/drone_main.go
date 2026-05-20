@@ -1,3 +1,10 @@
+/*
+Este arquivo implementa o simulador do Drone Autônomo (VANT) do HormuzNet.
+Ele emula o veículo encarregado de navegar até as ocorrências detectadas pelos sensores.
+O Drone conecta-se via TCP a um broker com mecanismo automático de fallback para outros endereços,
+reporta sua posição e status operacional periodicamente, executa comandos de voo recebidos do broker
+e simula perdas de conectividade ou abatimentos para forçar o replanejamento da malha.
+*/
 package main
 
 import (

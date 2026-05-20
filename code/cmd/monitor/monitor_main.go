@@ -1,3 +1,10 @@
+/*
+Este arquivo implementa o Monitor Central do HormuzNet.
+Ele serve como a central de controle e consolidação de visualização tática do Estreito.
+O Monitor se conecta aos brokers por meio de sockets TCP para coletar e de-duplicar eventos
+(status de drones, falhas, ocorrências e conexões P2P) e expõe um servidor web com WebSockets
+(na porta 8085) para atualizar a interface gráfica em tempo real.
+*/
 package main
 
 import (
@@ -173,6 +180,35 @@ var (
 	failovers   = make(map[string]string)
 )
 
+func obterBrokerID(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	switch port {
+	case "6000":
+		return "B1"
+	case "6001":
+		return "B2"
+	case "6002":
+		return "B3"
+	case "6003":
+		return "B4"
+	case "6004":
+		return "B5"
+	case "6005":
+		return "B6"
+	case "6006":
+		return "B7"
+	case "6007":
+		return "B8"
+	case "6008":
+		return "B9"
+	default:
+		return "B_" + port
+	}
+}
+
 func addEvento(tipo, msg, nivel string) {
 	estadoMu.Lock()
 	eventos = append(eventos, EventoLog{
@@ -284,9 +320,6 @@ func processarMensagem(msg models.MensagemBroker, addr string) {
 	estadoMu.Lock()
 	if b, ok := brokers[addr]; ok {
 		b.UltimoHB = time.Now()
-		if msg.BrokerID != "" {
-			b.ID = msg.BrokerID
-		}
 	}
 
 	// Registra/atualiza o broker que originou a mensagem
@@ -299,15 +332,10 @@ func processarMensagem(msg models.MensagemBroker, addr string) {
 				break
 			}
 		}
-		if bStatus == nil {
-			bStatus = &BrokerStatus{
-				ID:   bID,
-				Addr: bID,
-			}
-			brokers[bID] = bStatus
+		if bStatus != nil {
+			bStatus.Vivo = true
+			bStatus.UltimoHB = time.Now()
 		}
-		bStatus.Vivo = true
-		bStatus.UltimoHB = time.Now()
 	}
 	estadoMu.Unlock()
 
@@ -318,7 +346,7 @@ func processarMensagem(msg models.MensagemBroker, addr string) {
 			_, ok := brokers[peer]
 			if !ok {
 				brokers[peer] = &BrokerStatus{
-					ID:   peer,
+					ID:   obterBrokerID(peer),
 					Addr: peer,
 				}
 				estadoMu.Unlock()
@@ -339,49 +367,93 @@ func processarMensagem(msg models.MensagemBroker, addr string) {
 
 	case models.MsgDroneDespachado:
 		estadoMu.Lock()
-		if o, ok := ocorrencias[msg.OcorrenciaID]; ok {
-			o.Status = "ANDAMENTO"
+		o, ok := ocorrencias[msg.OcorrenciaID]
+		alreadyDespatched := ok && o.Status == "ANDAMENTO"
+		if !alreadyDespatched {
+			if !ok {
+				o = OcorrenciaDetalhada{
+					ID:     msg.OcorrenciaID,
+					Status: "ANDAMENTO",
+				}
+			} else {
+				o.Status = "ANDAMENTO"
+			}
 			ocorrencias[msg.OcorrenciaID] = o
 		}
 		estadoMu.Unlock()
-		addEvento("DESPACHO",
-			fmt.Sprintf("Drone %s despachado para ocorrência %s (broker %s)",
-				msg.DroneID, msg.OcorrenciaID, msg.BrokerID), "warn")
+		if !alreadyDespatched {
+			addEvento("DESPACHO",
+				fmt.Sprintf("Drone %s despachado para ocorrência %s (broker %s)",
+					msg.DroneID, msg.OcorrenciaID, msg.BrokerID), "warn")
+		}
 
 	case models.MsgDronePerdido:
 		estadoMu.Lock()
-		if d, ok := drones[msg.DroneID]; ok {
-			d.Estado = models.DroneAbatido
+		d, ok := drones[msg.DroneID]
+		alreadyAbatido := ok && d.Estado == models.DroneAbatido
+		if !alreadyAbatido {
+			if !ok {
+				d = models.InfoDrone{
+					DroneID: msg.DroneID,
+					Estado:  models.DroneAbatido,
+				}
+			} else {
+				d.Estado = models.DroneAbatido
+			}
 			drones[msg.DroneID] = d
 		}
 		estadoMu.Unlock()
-		addEvento("PERDA",
-			fmt.Sprintf("Drone %s PERDIDO — %s", msg.DroneID, msg.Motivo), "danger")
+		if !alreadyAbatido {
+			addEvento("PERDA",
+				fmt.Sprintf("Drone %s PERDIDO — %s", msg.DroneID, msg.Motivo), "danger")
+		}
 
 	case models.MsgDroneLiberado:
 		estadoMu.Lock()
-		if d, ok := drones[msg.DroneID]; ok {
-			d.Estado = models.DroneDisponivel
+		d, ok := drones[msg.DroneID]
+		alreadyAvailable := ok && d.Estado == models.DroneDisponivel
+		if !alreadyAvailable {
+			if !ok {
+				d = models.InfoDrone{
+					DroneID: msg.DroneID,
+					Estado:  models.DroneDisponivel,
+				}
+			} else {
+				d.Estado = models.DroneDisponivel
+			}
 			drones[msg.DroneID] = d
 		}
 		estadoMu.Unlock()
-		addEvento("LIBERADO", fmt.Sprintf("Drone %s disponível", msg.DroneID), "info")
+		if !alreadyAvailable {
+			addEvento("LIBERADO", fmt.Sprintf("Drone %s disponível", msg.DroneID), "info")
+		}
 
 	case models.MsgMissaoConcluida:
 		estadoMu.Lock()
-		if o, ok := ocorrencias[msg.OcorrenciaID]; ok {
-			o.Status = "CONCLUIDA"
+		o, ok := ocorrencias[msg.OcorrenciaID]
+		alreadyCompleted := ok && o.Status == "CONCLUIDA"
+		if !alreadyCompleted {
+			if !ok {
+				o = OcorrenciaDetalhada{
+					ID:     msg.OcorrenciaID,
+					Status: "CONCLUIDA",
+				}
+			} else {
+				o.Status = "CONCLUIDA"
+			}
 			ocorrencias[msg.OcorrenciaID] = o
 		}
 		estadoMu.Unlock()
-		addEvento("MISSAO",
-			fmt.Sprintf("Missão concluída: drone %s liberou %s", msg.DroneID, msg.OcorrenciaID), "info")
-
+		if !alreadyCompleted {
+			addEvento("MISSAO",
+				fmt.Sprintf("Missão concluída: drone %s liberou %s", msg.DroneID, msg.OcorrenciaID), "info")
+		}
 
 	case models.MsgRequisicaoDrone:
 		if msg.Ocorrencia != nil {
 			estadoMu.Lock()
-			if _, exists := ocorrencias[msg.Ocorrencia.ID]; !exists {
+			_, exists := ocorrencias[msg.Ocorrencia.ID]
+			if !exists {
 				ocorrencias[msg.Ocorrencia.ID] = OcorrenciaDetalhada{
 					ID:          msg.Ocorrencia.ID,
 					Tipo:        msg.Ocorrencia.Tipo,
@@ -391,22 +463,35 @@ func processarMensagem(msg models.MensagemBroker, addr string) {
 				}
 			}
 			estadoMu.Unlock()
-			addEvento("REQUISICAO",
-				fmt.Sprintf("Ocorrência %s [%s] em %s", msg.Ocorrencia.ID,
-					msg.Ocorrencia.Criticidade, msg.Ocorrencia.SetorOrigem), "warn")
+			if !exists {
+				addEvento("REQUISICAO",
+					fmt.Sprintf("Ocorrência %s [%s] em %s", msg.Ocorrencia.ID,
+						msg.Ocorrencia.Criticidade, msg.Ocorrencia.SetorOrigem), "warn")
+			}
 		}
 
 	case models.MsgFailover:
 		estadoMu.Lock()
-		failovers[msg.SetorID] = msg.BrokerID
+		prevBroker, alreadyFailover := failovers[msg.SetorID]
+		isNewFailover := !alreadyFailover || prevBroker != msg.BrokerID
+		if isNewFailover {
+			failovers[msg.SetorID] = msg.BrokerID
+		}
 		estadoMu.Unlock()
-		addEvento("FAILOVER", fmt.Sprintf("Broker %s assumiu setor %s (failover)", msg.BrokerID, msg.SetorID), "danger")
+		if isNewFailover {
+			addEvento("FAILOVER", fmt.Sprintf("Broker %s assumiu setor %s (failover)", msg.BrokerID, msg.SetorID), "danger")
+		}
 
 	case models.MsgFailoverRecuperado:
 		estadoMu.Lock()
-		delete(failovers, msg.SetorID)
+		_, isFailoverActive := failovers[msg.SetorID]
+		if isFailoverActive {
+			delete(failovers, msg.SetorID)
+		}
 		estadoMu.Unlock()
-		addEvento("RECUPERACAO", fmt.Sprintf("Broker %s recuperou setor %s", msg.BrokerID, msg.SetorID), "info")
+		if isFailoverActive {
+			addEvento("RECUPERACAO", fmt.Sprintf("Broker %s recuperou setor %s", msg.BrokerID, msg.SetorID), "info")
+		}
 	}
 }
 
@@ -446,7 +531,7 @@ func main() {
 			continue
 		}
 		estadoMu.Lock()
-		brokers[addr] = &BrokerStatus{Addr: addr, Vivo: false}
+		brokers[addr] = &BrokerStatus{ID: obterBrokerID(addr), Addr: addr, Vivo: false}
 		estadoMu.Unlock()
 		go conectarBroker(addr)
 	}

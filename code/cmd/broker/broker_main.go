@@ -1,3 +1,10 @@
+/*
+Este arquivo implementa o Broker de Setor do HormuzNet.
+Ele gerencia as ocorrências do seu respectivo setor geográfico do Estreito de Ormuz.
+O Broker escuta dados de sensores locais via UDP Multicast, coordena o despacho
+de drones locais via TCP, mantém uma fila de prioridades local sincronizada via P2P (Gossip)
+com relógio de Lamport para consistência distribuída, e assume setores de vizinhos caídos (Failover).
+*/
 package main
 
 import (
@@ -693,6 +700,8 @@ func (b *Broker) conectarLider(addr string) {
 		}
 
 		b.logger.Printf("Conectado ao líder %s! Solicitando Discovery...", addr)
+		backoff = 2 * time.Second // Reset backoff on successful connection
+		
 		reg := models.MensagemBroker{
 			Tipo:        models.MsgDiscovery,
 			BrokerID:    b.id,
@@ -707,13 +716,13 @@ func (b *Broker) conectarLider(addr string) {
 		}
 		b.logger.Printf("[TCP ENVIADO] Para lider %s, mensagem tipo=%s", addr, reg.Tipo)
 
-		b.registrarVizinho(addr, conn)
+		b.registrarVizinho("LIDER", conn)
 		scanner := bufio.NewScanner(conn)
-		go b.loopLeituraBroker("LIDER", conn, scanner)
+		b.loopLeituraBroker("LIDER", conn, scanner) // synchronous read loop!
 		
-		// Trava a rotina até que a conexão com o Líder caia
-		<-make(chan struct{})
-		break
+		b.logger.Printf("Conexão com líder %s perdida — reconectando em %s", addr, backoff)
+		time.Sleep(backoff)
+		if backoff < 30*time.Second { backoff *= 2 }
 	}
 }
 
@@ -814,10 +823,50 @@ func (b *Broker) registrarVizinho(brokerID string, conn net.Conn) {
 	b.vizinhosMu.Lock()
 	b.vizinhos[brokerID] = conn
 	b.vizinhosMu.Unlock()
-	b.heartbeatMu.Lock()
-	b.ultimoHB[brokerID] = time.Now()
-	b.heartbeatMu.Unlock()
+	
+	if eIDBrokerValido(brokerID) {
+		b.heartbeatMu.Lock()
+		b.ultimoHB[brokerID] = time.Now()
+		b.heartbeatMu.Unlock()
+	}
+	
 	b.logger.Printf("Broker vizinho registrado: %s (%s)", brokerID, conn.RemoteAddr())
+}
+
+func (b *Broker) obterPortaLocal() string {
+	_, port, err := net.SplitHostPort(b.portaTCP)
+	if err != nil {
+		return strings.TrimPrefix(b.portaTCP, ":")
+	}
+	return port
+}
+
+func (b *Broker) eMeuProprioEndereco(peer string) bool {
+	_, peerPort, err := net.SplitHostPort(peer)
+	if err != nil {
+		return false
+	}
+	return peerPort == b.obterPortaLocal()
+}
+
+func (b *Broker) deveIniciarConexao(peer string) bool {
+	_, peerPort, err := net.SplitHostPort(peer)
+	if err != nil {
+		return false
+	}
+	return b.obterPortaLocal() < peerPort
+}
+
+func eIDBrokerValido(id string) bool {
+	if len(id) < 2 || id[0] != 'B' {
+		return false
+	}
+	for i := 1; i < len(id); i++ {
+		if id[i] < '0' || id[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (b *Broker) loopLeituraBroker(brokerID string, conn net.Conn, scanner *bufio.Scanner) {
@@ -850,9 +899,11 @@ func (b *Broker) processarMensagemBroker(msg models.MensagemBroker, conn net.Con
 	b.syncLamport(msg.LamportTime)
 	b.enviarParaMonitores(msg)
 
-	b.heartbeatMu.Lock()
-	b.ultimoHB[msg.BrokerID] = time.Now()
-	b.heartbeatMu.Unlock()
+	if eIDBrokerValido(msg.BrokerID) {
+		b.heartbeatMu.Lock()
+		b.ultimoHB[msg.BrokerID] = time.Now()
+		b.heartbeatMu.Unlock()
+	}
 
 	// Failover: Registrar setor e reviver broker se estiver morto
 	if msg.SetorID != "" {
@@ -934,8 +985,15 @@ func (b *Broker) processarMensagemBroker(msg models.MensagemBroker, conn net.Con
 			b.peersConhecidosMu.Unlock()
 			
 			if !jaConhece {
-				b.logger.Printf("Descoberto novo peer via Líder: %s. Conectando...", peer)
-				go b.conectarVizinho(peer, true) // modoDiscovery = true
+				if b.eMeuProprioEndereco(peer) {
+					continue
+				}
+				if b.deveIniciarConexao(peer) {
+					b.logger.Printf("Descoberto novo peer via Líder: %s. Conectando...", peer)
+					go b.conectarVizinho(peer, true) // modoDiscovery = true
+				} else {
+					b.logger.Printf("Descoberto novo peer via Líder: %s. Aguardando conexão dele.", peer)
+				}
 			}
 		}
 	case models.MsgSincDrone:

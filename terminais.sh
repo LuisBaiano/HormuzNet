@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# HormuzNet — show_terminals.sh
+# HormuzNet — terminais.sh
 # Script para abrir janelas de terminal dedicadas monitorando os logs de cada contêiner ativo.
 # ═══════════════════════════════════════════════════════════════════════════════
 
