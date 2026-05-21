@@ -1,9 +1,16 @@
 /*
 Este arquivo implementa o Monitor Central do HormuzNet.
 Ele serve como a central de controle e consolidação de visualização tática do Estreito.
-O Monitor se conecta aos brokers por meio de sockets TCP para coletar e de-duplicar eventos
-(status de drones, falhas, ocorrências e conexões P2P) e expõe um servidor web com WebSockets
-(na porta 8085) para atualizar a interface gráfica em tempo real.
+
+Responsabilidades principais:
+  - Conectar-se ao Broker Líder via TCP e descobrir automaticamente os demais
+    Brokers da malha através do protocolo MsgPeerList (auto-discovery)
+  - Coletar e de-duplicar eventos de todos os Brokers (status de Drones,
+    ocorrências, Failovers e missões concluídas)
+  - Detectar Brokers inativos por timeout de heartbeat
+  - Expor um servidor HTTP com WebSocket RFC 6455 (implementado do zero, sem libs
+    externas) na porta 8085 para atualizar o dashboard em tempo real
+  - Servir o dashboard HTML/CSS/JS embutido com atualização automática a cada 1s
 */
 package main
 

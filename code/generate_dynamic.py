@@ -1,3 +1,23 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# HormuzNet — generate_dynamic.py
+# Gerador dinâmico de docker-compose para implantação distribuída (multi-host).
+# Chamado pelo menu.sh para criar um docker-compose-temp.yml contendo apenas
+# os serviços selecionados para o PC atual, apontando para o IP do Broker Líder.
+#
+# Modos disponíveis (--mode):
+#   lider    → Gera apenas o Broker Líder (B9 / Setor_Centro)
+#   brokers  → Gera N brokers seguidores (B1–B8) conectados ao líder remoto
+#   monitor  → Gera o Monitor (dashboard web na porta 8085)
+#   drones   → Gera N drones autônomos conectados ao líder remoto
+#   sensores → Gera 2 sensores por setor solicitado (transmissão via UDP Multicast)
+#
+# Argumentos:
+#   --mode   Modo de geração (obrigatório)
+#   --count  Quantidade de instâncias (default: 1)
+#   --lider  IP do Broker Líder remoto (ex: 192.168.1.10)
+#
+# Saída: docker-compose-temp.yml na raiz do projeto
+# ═══════════════════════════════════════════════════════════════════════════════
 import argparse
 import random
 import yaml

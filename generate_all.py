@@ -1,3 +1,15 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# HormuzNet — generate_all.py
+# Gerador de docker-compose completo (ambiente monolítico / tudo em um só PC).
+# Cria o arquivo docker-compose-all.yml com TODOS os serviços da simulação:
+#   - 1 Broker Líder (B9 / Setor_Centro)
+#   - 8 Brokers Seguidores (B1–B8)
+#   - 1 Monitor (dashboard web na porta 8085)
+#   - 7 Drones distribuídos pelos setores cardinais e central
+#   - 18 Sensores (2 por broker), com tipo e posição gerados aleatoriamente
+# Útil para testes locais completos sem distribuição entre múltiplos hosts.
+# Uso: python3 generate_all.py   →  gera docker-compose-all.yml na raiz
+# ═══════════════════════════════════════════════════════════════════════════════
 import random
 import yaml
 

@@ -1,9 +1,15 @@
 /*
 Este arquivo implementa o Broker de Setor do HormuzNet.
 Ele gerencia as ocorrências do seu respectivo setor geográfico do Estreito de Ormuz.
-O Broker escuta dados de sensores locais via UDP Multicast, coordena o despacho
-de drones locais via TCP, mantém uma fila de prioridades local sincronizada via P2P (Gossip)
-com relógio de Lamport para consistência distribuída, e assume setores de vizinhos caídos (Failover).
+
+Responsabilidades principais:
+  - Escutar leituras de sensores via UDP Multicast (grupo 224.1.2.3:9876)
+  - Aceitar conexões TCP de Drones locais e outros Brokers da malha
+  - Manter uma fila de prioridades local com ordenação por Relógio de Lamport
+  - Sincronizar o estado global de Drones e Ocorrências via protocolo Gossip P2P
+  - Disparar Heartbeats periódicos para detectar falhas de vizinhos
+  - Assumir setores de Brokers caídos usando lógica de Ring Failover
+  - Despachar o Drone mais próximo disponível de forma pró-ativa (sem impasse)
 */
 package main
 

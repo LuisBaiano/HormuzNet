@@ -1,10 +1,27 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════════
 # HormuzNet — menu.sh
-# Menu Interativo para Subir a Infraestrutura Dinâmica (via Docker)
+# Menu interativo para subir os componentes da infraestrutura distribuída.
+# Detecta automaticamente se o ambiente usa 'docker compose' (plugin v2) ou
+# 'docker-compose' (binário standalone v1), garantindo compatibilidade com
+# diferentes versões de Docker presentes nos laboratórios da faculdade.
+# Para cada opção do menu, invoca o gerador Python (generate_dynamic.py) para
+# criar um docker-compose-temp.yml sob medida e o sobe com as flags corretas.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set -euo pipefail
+
+# ── Detecta docker compose (v2 plugin) ou docker-compose (v1 standalone) ────
+if docker compose version &>/dev/null 2>&1; then
+    DOCKER_COMPOSE="docker compose"
+elif command -v docker-compose &>/dev/null; then
+    DOCKER_COMPOSE="docker-compose"
+else
+    echo -e "\e[1;31m[ERRO] Nenhuma versão do docker compose encontrada!\e[0m"
+    echo "       Instale o Docker Compose antes de continuar."
+    exit 1
+fi
+echo -e "\e[0;90m[INFO] Usando: $DOCKER_COMPOSE\e[0m"
 
 # Função para exibir o cabeçalho
 header() {
@@ -34,7 +51,7 @@ while true; do
         1)
             echo -e "\n\e[1;32m=> Iniciando o Broker Líder...\e[0m"
             python3 code/generate_dynamic.py --mode lider
-            docker compose -f docker-compose-temp.yml up -d --build
+            $DOCKER_COMPOSE -f docker-compose-temp.yml up -d --build
             echo -e "\n\e[1;32m[SUCESSO] Líder rodando! O IP deste Líder para os outros PCs é: \e[1;37m$LOCAL_IP\e[0m"
             read -p "Pressione Enter para continuar..."
             ;;
@@ -44,7 +61,7 @@ while true; do
             LIDER_IP=${LIDER_IP:-$LOCAL_IP}
             read -p "Quantos brokers você quer subir neste PC? (1 a 8): " COUNT
             python3 code/generate_dynamic.py --mode brokers --count "$COUNT" --lider "$LIDER_IP"
-            docker compose -f docker-compose-temp.yml up -d --build
+            $DOCKER_COMPOSE -f docker-compose-temp.yml up -d --build
             echo -e "\n\e[1;32m[SUCESSO] Subidos $COUNT brokers apontando para o Líder $LIDER_IP!\e[0m"
             read -p "Pressione Enter para continuar..."
             ;;
@@ -53,7 +70,7 @@ while true; do
             read -p "Qual é o IP do Líder? (Deixe em branco para usar $LOCAL_IP): " LIDER_IP
             LIDER_IP=${LIDER_IP:-$LOCAL_IP}
             python3 code/generate_dynamic.py --mode monitor --lider "$LIDER_IP"
-            docker compose -f docker-compose-temp.yml up -d --build
+            $DOCKER_COMPOSE -f docker-compose-temp.yml up -d --build
             echo -e "\n\e[1;32m[SUCESSO] Monitor rodando! Acesse: http://localhost:8085 or http://$LOCAL_IP:8085\e[0m"
             read -p "Pressione Enter para continuar..."
             ;;
@@ -63,7 +80,7 @@ while true; do
             LIDER_IP=${LIDER_IP:-$LOCAL_IP}
             read -p "Quantos Drones você quer subir?: " COUNT
             python3 code/generate_dynamic.py --mode drones --count "$COUNT" --lider "$LIDER_IP"
-            docker compose -f docker-compose-temp.yml up -d --build
+            $DOCKER_COMPOSE -f docker-compose-temp.yml up -d --build
             echo -e "\n\e[1;32m[SUCESSO] Subidos $COUNT Drones!\e[0m"
             read -p "Pressione Enter para continuar..."
             ;;
@@ -73,7 +90,7 @@ while true; do
             LIDER_IP=${LIDER_IP:-$LOCAL_IP}
             read -p "Quantos setores (brokers) você quer cobrir com sensores? (1 a 9): " COUNT
             python3 code/generate_dynamic.py --mode sensores --count "$COUNT" --lider "$LIDER_IP"
-            docker compose -f docker-compose-temp.yml up -d --build
+            $DOCKER_COMPOSE -f docker-compose-temp.yml up -d --build
             echo -e "\n\e[1;32m[SUCESSO] Sensores criados!\e[0m"
             read -p "Pressione Enter para continuar..."
             ;;
