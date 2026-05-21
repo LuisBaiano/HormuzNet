@@ -22,8 +22,117 @@ import argparse
 import random
 import yaml
 import os
+import socket
+import json
+import time
 
-def gerar_yaml(mode, count, lider_ip):
+def detectar_ativos(lider_ip):
+    # Retorna (portas_ativas, drones_ativos)
+    portas_ativas = set()
+    drones_ativos = set()
+    if not lider_ip:
+        return portas_ativas, drones_ativos
+
+    # Se informou lider, assume que a porta dele (6008) está ativa
+    portas_ativas.add(6008)
+
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        s.connect((lider_ip, 6008))
+
+        # Envia registro como monitor temporário para receber peer list e sincronização de drones
+        msg = {
+            "tipo": "REGISTRO",
+            "broker_id": "MONITOR-AUTO-DISCOVER"
+        }
+        s.sendall((json.dumps(msg) + "\n").encode('utf-8'))
+
+        # Lendo respostas
+        data = b""
+        start_time = time.time()
+        while time.time() - start_time < 1.0:
+            try:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                lines = data.split(b"\n")
+                # Mantém a última linha incompleta no buffer
+                data = lines[-1]
+                for line in lines[:-1]:
+                    if not line:
+                        continue
+                    try:
+                        res = json.loads(line.decode('utf-8'))
+                        # Verifica se é SINC_DRONE
+                        if res.get("tipo") == "SINC_DRONE" and "drone" in res:
+                            drone_info = res["drone"]
+                            drone_id = drone_info.get("drone_id")
+                            if drone_id:
+                                parts = drone_id.split("_")
+                                if parts:
+                                    try:
+                                        drones_ativos.add(int(parts[-1]))
+                                    except ValueError:
+                                        pass
+                        # Verifica se é PEER_LIST
+                        elif res.get("tipo") == "PEER_LIST" and "peers" in res:
+                            peers = res["peers"]
+                            for peer in peers:
+                                if ":" in peer:
+                                    try:
+                                        port = int(peer.split(":")[-1])
+                                        portas_ativas.add(port)
+                                    except ValueError:
+                                        pass
+                    except json.JSONDecodeError:
+                        pass
+            except socket.timeout:
+                break
+        s.close()
+    except Exception:
+        pass
+
+    return portas_ativas, drones_ativos
+
+def sugerir_start(mode, count, lider_ip):
+    portas_ativas, drones_ativos = detectar_ativos(lider_ip)
+    
+    if mode == "brokers" or mode == "sensores":
+        active_indices = set()
+        for p in portas_ativas:
+            if 6000 <= p <= 6007:
+                active_indices.add(p - 6000 + 1)
+        
+        # Acha primeiro bloco contíguo de tamanho count livre
+        for i in range(1, 9):
+            if i + count - 1 > 8:
+                break
+            if all(j not in active_indices for j in range(i, i + count)):
+                return i
+        # Se não achou bloco contíguo, retorna o primeiro índice livre isolado
+        for i in range(1, 9):
+            if i not in active_indices:
+                return i
+        return 1
+        
+    elif mode == "drones":
+        i = 1
+        while True:
+            if all(j not in drones_ativos for j in range(i, i + count)):
+                return i
+            i += 1
+            if i > 100:
+                break
+        return i
+        
+    return 1
+
+def gerar_yaml(mode, count, lider_ip, start_index=-1):
+    if start_index == -1:
+        start_index = sugerir_start(mode, count, lider_ip)
+
     services = {}
 
     brokers_base = [
@@ -61,7 +170,7 @@ def gerar_yaml(mode, count, lider_ip):
         }
 
     elif mode == "brokers":
-        for i in range(min(count, 8)):
+        for i in range(start_index - 1, min(start_index - 1 + count, 8)):
             b = brokers_base[i]
             services[f"broker{i+1}"] = {
                 "build": {"context": "./code", "dockerfile": "Dockerfile.broker"},
@@ -81,7 +190,7 @@ def gerar_yaml(mode, count, lider_ip):
         }
 
     elif mode == "drones":
-        for i in range(count):
+        for i in range(start_index - 1, start_index - 1 + count):
             d = drones_base[i % len(drones_base)]
             id_drone = f"Drone_{d['nome'].upper()}_{i+1}"
             services[f"drone{i+1}"] = {
@@ -93,9 +202,9 @@ def gerar_yaml(mode, count, lider_ip):
             }
 
     elif mode == "sensores":
-        # Gera 2 sensores para cada broker solicitado
-        s_count = 1
-        for i in range(min(count, 9)):
+        # Gera 2 sensores para cada broker solicitado a partir de start_index
+        s_count = (start_index - 1) * 2 + 1
+        for i in range(start_index - 1, min(start_index - 1 + count, 9)):
             b = brokers_base[i]
             for j in range(2):
                 t = random.choice(types)
@@ -125,6 +234,7 @@ if __name__ == "__main__":
     parser.add_argument("--mode", choices=["lider", "brokers", "monitor", "drones", "sensores"], required=True)
     parser.add_argument("--count", type=int, default=1)
     parser.add_argument("--lider", type=str, default="")
+    parser.add_argument("--start", type=int, default=-1, help="ID/Indice de inicio da numeracao (-1 para autodetectar)")
     args = parser.parse_args()
 
-    gerar_yaml(args.mode, args.count, args.lider)
+    gerar_yaml(args.mode, args.count, args.lider, args.start)

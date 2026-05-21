@@ -60,9 +60,12 @@ while true; do
             read -p "Qual é o IP do Líder? (Deixe em branco para usar $LOCAL_IP): " LIDER_IP
             LIDER_IP=${LIDER_IP:-$LOCAL_IP}
             read -p "Quantos brokers você quer subir neste PC? (1 a 8): " COUNT
-            python3 code/generate_dynamic.py --mode brokers --count "$COUNT" --lider "$LIDER_IP"
+            SUGGESTED_START=$(python3 -c "import sys; sys.path.append('code'); from generate_dynamic import sugerir_start; print(sugerir_start('brokers', $COUNT, '$LIDER_IP'))" 2>/dev/null || echo 1)
+            read -p "A partir de qual ID/broker iniciar? (1 a 8, padrão $SUGGESTED_START): " START
+            START=${START:-$SUGGESTED_START}
+            python3 code/generate_dynamic.py --mode brokers --count "$COUNT" --lider "$LIDER_IP" --start "$START"
             $DOCKER_COMPOSE -f docker-compose-temp.yml up -d --build
-            echo -e "\n\e[1;32m[SUCESSO] Subidos $COUNT brokers apontando para o Líder $LIDER_IP!\e[0m"
+            echo -e "\n\e[1;32m[SUCESSO] Subidos $COUNT brokers a partir de B$START apontando para o Líder $LIDER_IP!\e[0m"
             read -p "Pressione Enter para continuar..."
             ;;
         3)
@@ -79,19 +82,25 @@ while true; do
             read -p "Qual é o IP do Líder? (Deixe em branco para usar $LOCAL_IP): " LIDER_IP
             LIDER_IP=${LIDER_IP:-$LOCAL_IP}
             read -p "Quantos Drones você quer subir?: " COUNT
-            python3 code/generate_dynamic.py --mode drones --count "$COUNT" --lider "$LIDER_IP"
+            SUGGESTED_START=$(python3 -c "import sys; sys.path.append('code'); from generate_dynamic import sugerir_start; print(sugerir_start('drones', $COUNT, '$LIDER_IP'))" 2>/dev/null || echo 1)
+            read -p "A partir de qual ID/índice de drone iniciar? (padrão $SUGGESTED_START): " START
+            START=${START:-$SUGGESTED_START}
+            python3 code/generate_dynamic.py --mode drones --count "$COUNT" --lider "$LIDER_IP" --start "$START"
             $DOCKER_COMPOSE -f docker-compose-temp.yml up -d --build
-            echo -e "\n\e[1;32m[SUCESSO] Subidos $COUNT Drones!\e[0m"
+            echo -e "\n\e[1;32m[SUCESSO] Subidos $COUNT Drones a partir do Drone $START!\e[0m"
             read -p "Pressione Enter para continuar..."
             ;;
         5)
             echo -e "\n\e[1;32m=> Sensores (2 por setor)\e[0m"
             read -p "Qual é o IP do Líder? (Deixe em branco para usar $LOCAL_IP): " LIDER_IP
             LIDER_IP=${LIDER_IP:-$LOCAL_IP}
-            read -p "Quantos setores (brokers) você quer cobrir com sensores? (1 a 9): " COUNT
-            python3 code/generate_dynamic.py --mode sensores --count "$COUNT" --lider "$LIDER_IP"
+            SUGGESTED_START=$(python3 -c "import sys; sys.path.append('code'); from generate_dynamic import sugerir_start; print(sugerir_start('sensores', 1, '$LIDER_IP'))" 2>/dev/null || echo 1)
+            read -p "A partir de qual broker/setor deseja cobrir com sensores? (1 a 9, padrão $SUGGESTED_START): " START
+            START=${START:-$SUGGESTED_START}
+            read -p "Quantos setores (brokers) a partir de B$START você quer cobrir com sensores? (1 a 9): " COUNT
+            python3 code/generate_dynamic.py --mode sensores --count "$COUNT" --lider "$LIDER_IP" --start "$START"
             $DOCKER_COMPOSE -f docker-compose-temp.yml up -d --build
-            echo -e "\n\e[1;32m[SUCESSO] Sensores criados!\e[0m"
+            echo -e "\n\e[1;32m[SUCESSO] Sensores criados a partir do setor B$START!\e[0m"
             read -p "Pressione Enter para continuar..."
             ;;
         0)
