@@ -125,14 +125,21 @@ const (
 	// Notificações de Failover regional
 	MsgFailover           TipoMensagemBroker = "FAILOVER"
 	MsgFailoverRecuperado TipoMensagemBroker = "FAILOVER_RECUPERADO"
+
+	// Notificações de Eleição Ativa (Bully)
+	MsgEleicao     TipoMensagemBroker = "ELEICAO"
+	MsgEleicaoOk   TipoMensagemBroker = "ELEICAO_OK"
+	MsgCoordenador TipoMensagemBroker = "COORDENADOR"
 )
 
 type MensagemBroker struct {
-	Tipo        TipoMensagemBroker `json:"tipo"`
-	BrokerID    string             `json:"broker_id"`
-	SetorID     string             `json:"setor_id,omitempty"` // Setor do Broker enviando a mensagem (Failover)
-	Timestamp   time.Time          `json:"timestamp"`
-	LamportTime int                `json:"lamport_time"` // Relógio de Lamport
+	Tipo          TipoMensagemBroker `json:"tipo"`
+	BrokerID      string             `json:"broker_id"`
+	SetorID       string             `json:"setor_id,omitempty"` // Setor do Broker enviando a mensagem (Failover)
+	LiderID       string             `json:"lider_id,omitempty"` // Líder eleito atual
+	StatusEleicao string             `json:"status_eleicao,omitempty"` // "ESTAVEL" ou "EM_ELEICAO"
+	Timestamp     time.Time          `json:"timestamp"`
+	LamportTime   int                `json:"lamport_time"` // Relógio de Lamport
 
 	Ocorrencia   *Ocorrencia `json:"ocorrencia,omitempty"`
 	DroneID      string      `json:"drone_id,omitempty"`

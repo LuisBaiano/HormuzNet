@@ -171,20 +171,25 @@ type OcorrenciaDetalhada struct {
 }
 
 type EstadoGlobal struct {
-	Drones      map[string]models.InfoDrone       `json:"drones"`
-	Brokers     []BrokerStatus                    `json:"brokers"`
-	Eventos     []EventoLog                       `json:"eventos"`
-	Ocorrencias map[string]OcorrenciaDetalhada    `json:"ocorrencias"`
-	Failovers   map[string]string                 `json:"failovers"`
+	Drones        map[string]models.InfoDrone       `json:"drones"`
+	Brokers       []BrokerStatus                    `json:"brokers"`
+	Eventos       []EventoLog                       `json:"eventos"`
+	Ocorrencias   map[string]OcorrenciaDetalhada    `json:"ocorrencias"`
+	Failovers     map[string]string                 `json:"failovers"`
+	LiderAtual    string                            `json:"lider_atual"`
+	StatusEleicao string                            `json:"status_eleicao"`
 }
 
 var (
-	estadoMu    sync.RWMutex
-	drones      = make(map[string]models.InfoDrone)
-	brokers     = make(map[string]*BrokerStatus)
-	eventos     []EventoLog
-	ocorrencias = make(map[string]OcorrenciaDetalhada)
-	failovers   = make(map[string]string)
+	estadoMu      sync.RWMutex
+	drones        = make(map[string]models.InfoDrone)
+	brokers       = make(map[string]*BrokerStatus)
+	eventos       []EventoLog
+	ocorrencias   = make(map[string]OcorrenciaDetalhada)
+	failovers     = make(map[string]string)
+	liderAtual    = "B9" // B9 é o líder padrão
+	statusEleicao = "ESTAVEL"
+	liderMu       sync.RWMutex
 )
 
 func obterBrokerID(addr string) string {
@@ -277,7 +282,20 @@ func snapshot() []byte {
 	}
 	estadoMu.RUnlock()
 
-	estado := EstadoGlobal{Drones: d, Brokers: blist, Eventos: ev, Ocorrencias: o, Failovers: fo}
+	liderMu.RLock()
+	lCur := liderAtual
+	sEl := statusEleicao
+	liderMu.RUnlock()
+
+	estado := EstadoGlobal{
+		Drones:        d,
+		Brokers:       blist,
+		Eventos:       ev,
+		Ocorrencias:   o,
+		Failovers:     fo,
+		LiderAtual:    lCur,
+		StatusEleicao: sEl,
+	}
 	data, _ := json.Marshal(estado)
 	return data
 }
@@ -393,6 +411,28 @@ func processarMensagem(msg models.MensagemBroker, addr string) {
 	estadoMu.Unlock()
 
 	switch msg.Tipo {
+	case models.MsgHeartbeat:
+		if msg.LiderID != "" {
+			liderMu.Lock()
+			liderAtual = msg.LiderID
+			statusEleicao = msg.StatusEleicao
+			liderMu.Unlock()
+		}
+
+	case models.MsgEleicao:
+		addEvento("ELEICAO", fmt.Sprintf("Broker %s iniciou eleição para novo líder", msg.BrokerID), "warn")
+		liderMu.Lock()
+		statusEleicao = "EM_ELEICAO"
+		liderAtual = "ELEGENDO..."
+		liderMu.Unlock()
+
+	case models.MsgCoordenador:
+		addEvento("LIDER", fmt.Sprintf("Novo líder eleito: %s", msg.BrokerID), "info")
+		liderMu.Lock()
+		statusEleicao = "ESTAVEL"
+		liderAtual = msg.BrokerID
+		liderMu.Unlock()
+
 	case models.MsgPeerList:
 		for _, peer := range msg.Peers {
 			estadoMu.Lock()
@@ -578,15 +618,30 @@ func main() {
 	flag.Parse()
 
 	addrs := strings.Split(*brokersFlag, ",")
+	var finalAddrs []string
 	for _, addr := range addrs {
 		addr = strings.TrimSpace(addr)
 		if addr == "" {
 			continue
 		}
+		finalAddrs = append(finalAddrs, addr)
+
+		if strings.HasSuffix(addr, ":6008") {
+			host, _, _ := net.SplitHostPort(addr)
+			for p := 6007; p >= 6000; p-- {
+				fallbackAddr := fmt.Sprintf("%s:%d", host, p)
+				finalAddrs = append(finalAddrs, fallbackAddr)
+			}
+		}
+	}
+
+	for _, addr := range finalAddrs {
 		estadoMu.Lock()
-		brokers[addr] = &BrokerStatus{ID: obterBrokerID(addr), Addr: addr, Vivo: false}
+		if _, ok := brokers[addr]; !ok {
+			brokers[addr] = &BrokerStatus{ID: obterBrokerID(addr), Addr: addr, Vivo: false}
+			go conectarBroker(addr)
+		}
 		estadoMu.Unlock()
-		go conectarBroker(addr)
 	}
 
 	// Push de estado a cada 1s para todos os clientes WS
@@ -914,6 +969,18 @@ body::before {
   pointer-events: none;
   z-index: 9999;
 }
+@keyframes pulse {
+  0% { opacity: 0.3; text-shadow: 0 0 5px var(--amber); }
+  50% { opacity: 1; text-shadow: 0 0 15px var(--amber); }
+  100% { opacity: 0.3; text-shadow: 0 0 5px var(--amber); }
+}
+.pulse {
+  animation: pulse 1.5s infinite;
+}
+.broker-card.leader {
+  border-color: #00c2ff !important;
+  box-shadow: 0 0 10px rgba(0, 194, 255, 0.4), inset 0 0 4px rgba(0, 232, 122, 0.2) !important;
+}
 </style>
 </head>
 <body>
@@ -921,6 +988,11 @@ body::before {
 <header>
   <div class="logo">HORMUZNET <span>// CENTRO DE CONTROLE TÁTICO</span></div>
   <div class="header-stats">
+    <div class="hstat" style="border-right: 1px solid var(--border); padding-right: 15px; margin-right: 5px;">
+      <span style="font-size: .6rem; color: var(--textdim); letter-spacing: .08em;">LÍDER DA REDE</span>
+      <b class="green" id="h-lider">B9</b>
+      <span id="h-lider-status" style="font-size: 0.55rem; color: var(--green); font-weight: bold;">ESTÁVEL</span>
+    </div>
     <div class="hstat"><b class="green" id="h-disp">0</b>DISPONÍVEIS</div>
     <div class="hstat"><b class="amber" id="h-miss">0</b>EM MISSÃO</div>
     <div class="hstat"><b class="blue"  id="h-ret">0</b>RETORNANDO</div>
@@ -1068,6 +1140,24 @@ function atualizarHeader() {
   document.getElementById('h-oc-esp').textContent = esp;
   document.getElementById('h-oc-and').textContent = and;
   document.getElementById('h-oc-con').textContent = con;
+
+  const hLider = document.getElementById('h-lider');
+  const hLiderStatus = document.getElementById('h-lider-status');
+  if (hLider && hLiderStatus) {
+    if (estado.status_eleicao === 'EM_ELEICAO') {
+      hLider.textContent = estado.lider_atual || 'ELEGENDO...';
+      hLider.className = 'amber pulse';
+      hLiderStatus.textContent = 'EM ELEIÇÃO';
+      hLiderStatus.style.color = 'var(--amber)';
+      hLiderStatus.className = 'pulse';
+    } else {
+      hLider.textContent = estado.lider_atual || 'B9';
+      hLider.className = 'green';
+      hLiderStatus.textContent = 'ESTÁVEL';
+      hLiderStatus.style.color = 'var(--green)';
+      hLiderStatus.className = '';
+    }
+  }
 }
 
 function renderOcorrencias() {
@@ -1136,10 +1226,14 @@ function renderBrokers() {
     const addr = b ? b.addr : 'Offline';
     const hb = b ? formatTime(b.ultimo_hb) : '--';
     
-    return '<div class="broker-card" style="' + (!vivo ? 'opacity: 0.6;' : '') + '">'
+    const isLeader = estado.lider_atual === eb.id && estado.status_eleicao !== 'EM_ELEICAO';
+    const cardClass = 'broker-card' + (isLeader ? ' leader' : '');
+    const leaderLabel = isLeader ? ' <span style="color:#00c2ff;font-weight:bold;font-size:0.6rem;margin-left:4px">[LÍDER]</span>' : '';
+
+    return '<div class="' + cardClass + '" style="' + (!vivo ? 'opacity: 0.6;' : '') + '">'
       + '<div class="br-led' + (vivo ? ' on' : '') + '"></div>'
       + '<div class="br-info">'
-      +   '<div class="br-id">' + eb.id + ' <span style="font-size:0.6rem;color:var(--textdim)">(' + eb.setor.split('_')[1] + ')</span></div>'
+      +   '<div class="br-id">' + eb.id + leaderLabel + ' <span style="font-size:0.6rem;color:var(--textdim)">(' + eb.setor.split('_')[1] + ')</span></div>'
       +   '<div class="br-addr">' + addr + '</div>'
       + '</div>'
       + '<div class="br-hb">' + hb + '</div>'

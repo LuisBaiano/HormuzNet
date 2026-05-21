@@ -48,6 +48,12 @@ type Broker struct {
 	portaUDP string
 	portaTCP string
 
+	liderID       string
+	liderIDMu     sync.RWMutex
+	statusEleicao string // "ESTAVEL" ou "EM_ELEICAO"
+	okRecebido    bool
+	eleicaoMu     sync.Mutex
+
 	lamport   int
 	lamportMu sync.Mutex
 
@@ -92,6 +98,8 @@ func novoBroker(id, setorID, portaUDP, portaTCP string) *Broker {
 		setorID:           setorID,
 		portaUDP:          portaUDP,
 		portaTCP:          portaTCP,
+		liderID:           "B9", // Inicialmente assume B9
+		statusEleicao:     "ESTAVEL",
 		lamport:           0,
 		fila:              fila.Nova(),
 		dronesLocais:      make(map[string]net.Conn),
@@ -141,6 +149,9 @@ func main() {
 	}
 
 	b := novoBroker(*id, *setor, *udp, *tcp)
+	if *lider == "" {
+		b.liderID = *id
+	}
 	b.logger.Printf("Iniciando — setor=%s UDP=%s TCP=%s", *setor, *udp, *tcp)
 
 	go b.escutarTCP()
@@ -701,43 +712,67 @@ func (b *Broker) loopVerificarOciosidade() {
 // ── Brokers vizinhos ──────────────────────────────────────────────────────────
 
 func (b *Broker) conectarLider(addr string) {
-	// A porta TCP em que ESTE broker escuta
 	_, portaLocal, _ := net.SplitHostPort(b.portaTCP)
 	
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = "localhost"
+	}
+	
+	// Lista de endereços para tentar (começa com o líder principal B9 na 6008)
+	var addrsToTry []string
+	addrsToTry = append(addrsToTry, addr)
+	for port := 6007; port >= 6000; port-- {
+		fallbackAddr := fmt.Sprintf("%s:%d", host, port)
+		if fallbackAddr != b.portaTCP { // Não conecta em si mesmo
+			addrsToTry = append(addrsToTry, fallbackAddr)
+		}
+	}
+
 	backoff := 2 * time.Second
 	for {
-		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
-		if err != nil {
-			b.logger.Printf("Falha ao conectar no líder %s: %v — retry em %s", addr, err, backoff)
+		connected := false
+		for _, targetAddr := range addrsToTry {
+			conn, err := net.DialTimeout("tcp", targetAddr, 2*time.Second)
+			if err != nil {
+				continue
+			}
+
+			b.logger.Printf("Conectado ao peer de descoberta %s! Solicitando Discovery...", targetAddr)
+			backoff = 2 * time.Second // Reset backoff
+
+			reg := models.MensagemBroker{
+				Tipo:        models.MsgDiscovery,
+				BrokerID:    b.id,
+				SetorID:     b.setorID,
+				Motivo:      portaLocal, // Envia porta TCP local
+				Timestamp:   time.Now(),
+				LamportTime: b.tick(),
+			}
+			if err := json.NewEncoder(conn).Encode(reg); err != nil {
+				conn.Close()
+				continue
+			}
+			b.logger.Printf("[TCP ENVIADO] Para peer de descoberta %s, mensagem tipo=%s", targetAddr, reg.Tipo)
+
+			b.registrarVizinho("LIDER", conn)
+			scanner := bufio.NewScanner(conn)
+			b.loopLeituraBroker("LIDER", conn, scanner) // bloqueia no loop de leitura
+
+			b.logger.Printf("Conexão com peer de descoberta %s perdida", targetAddr)
+			connected = true
+			break // Sai do loop interno de targets e recomeça a busca
+		}
+
+		if !connected {
+			b.logger.Printf("Falha ao conectar a qualquer peer de descoberta. Tentando novamente em %s...", backoff)
 			time.Sleep(backoff)
-			if backoff < 30*time.Second { backoff *= 2 }
-			continue
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+		} else {
+			time.Sleep(2 * time.Second)
 		}
-
-		b.logger.Printf("Conectado ao líder %s! Solicitando Discovery...", addr)
-		backoff = 2 * time.Second // Reset backoff on successful connection
-		
-		reg := models.MensagemBroker{
-			Tipo:        models.MsgDiscovery,
-			BrokerID:    b.id,
-			SetorID:     b.setorID,
-			Motivo:      portaLocal, // Envia porta TCP local para o Líder
-			Timestamp:   time.Now(),
-			LamportTime: b.tick(),
-		}
-		if err := json.NewEncoder(conn).Encode(reg); err != nil {
-			conn.Close()
-			continue
-		}
-		b.logger.Printf("[TCP ENVIADO] Para lider %s, mensagem tipo=%s", addr, reg.Tipo)
-
-		b.registrarVizinho("LIDER", conn)
-		scanner := bufio.NewScanner(conn)
-		b.loopLeituraBroker("LIDER", conn, scanner) // synchronous read loop!
-		
-		b.logger.Printf("Conexão com líder %s perdida — reconectando em %s", addr, backoff)
-		time.Sleep(backoff)
-		if backoff < 30*time.Second { backoff *= 2 }
 	}
 }
 
@@ -869,19 +904,20 @@ func eIDBrokerValido(id string) bool {
 }
 
 func (b *Broker) loopLeituraBroker(brokerID string, conn net.Conn, scanner *bufio.Scanner) {
+	idReal := brokerID
 	defer func() {
 		conn.Close()
 		b.vizinhosMu.Lock()
-		if b.vizinhos[brokerID] == conn {
-			delete(b.vizinhos, brokerID)
-			b.logger.Printf("Broker vizinho desconectado: %s", brokerID)
+		if b.vizinhos[idReal] == conn {
+			delete(b.vizinhos, idReal)
+			b.logger.Printf("Broker vizinho desconectado: %s", idReal)
 		} else {
-			b.logger.Printf("Conexão antiga do Broker vizinho %s encerrada (conexão nova já ativa). Ignorando cleanup.", brokerID)
+			b.logger.Printf("Conexão antiga do Broker vizinho %s encerrada (conexão nova já ativa). Ignorando cleanup.", idReal)
 		}
 		b.vizinhosMu.Unlock()
 	}()
 	for {
-		if !strings.HasPrefix(brokerID, "MONITOR-") {
+		if !strings.HasPrefix(idReal, "MONITOR-") {
 			conn.SetReadDeadline(time.Now().Add(heartbeatTimeout))
 		}
 		if !scanner.Scan() {
@@ -893,6 +929,13 @@ func (b *Broker) loopLeituraBroker(brokerID string, conn net.Conn, scanner *bufi
 		}
 		if msg.Tipo != models.MsgHeartbeat {
 			b.logger.Printf("[TCP RECEBIDO] De %s, mensagem tipo=%s", msg.BrokerID, msg.Tipo)
+		}
+		if msg.BrokerID != "" && msg.BrokerID != idReal {
+			b.vizinhosMu.Lock()
+			delete(b.vizinhos, idReal)
+			b.vizinhos[msg.BrokerID] = conn
+			b.vizinhosMu.Unlock()
+			idReal = msg.BrokerID
 		}
 		b.processarMensagemBroker(msg, conn)
 	}
@@ -936,6 +979,36 @@ func (b *Broker) processarMensagemBroker(msg models.MensagemBroker, conn net.Con
 	b.brokersMortosMu.Unlock()
 
 	switch msg.Tipo {
+	case models.MsgEleicao:
+		b.logger.Printf("[ELEIÇÃO] Recebida MsgEleicao de %s", msg.BrokerID)
+		meuNum := obterNumID(b.id)
+		remotoNum := obterNumID(msg.BrokerID)
+		if meuNum > remotoNum {
+			okMsg := models.MensagemBroker{
+				Tipo:        models.MsgEleicaoOk,
+				BrokerID:    b.id,
+				Timestamp:   time.Now(),
+				LamportTime: b.tick(),
+			}
+			conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+			json.NewEncoder(conn).Encode(okMsg)
+
+			go b.iniciarEleicao()
+		}
+
+	case models.MsgEleicaoOk:
+		b.logger.Printf("[ELEIÇÃO] Recebido OK de eleição do broker %s", msg.BrokerID)
+		b.eleicaoMu.Lock()
+		b.okRecebido = true
+		b.eleicaoMu.Unlock()
+
+	case models.MsgCoordenador:
+		b.logger.Printf("[ELEIÇÃO] Novo coordenador anunciado: %s", msg.BrokerID)
+		b.liderIDMu.Lock()
+		b.liderID = msg.BrokerID
+		b.statusEleicao = "ESTAVEL"
+		b.liderIDMu.Unlock()
+
 	case models.MsgHeartbeat:
 		// heartbeat já registrado acima
 	case models.MsgDiscovery:
@@ -1095,12 +1168,19 @@ func (b *Broker) loopHeartbeat() {
 	ticker := time.NewTicker(heartbeatInterval / 2)
 	defer ticker.Stop()
 	for range ticker.C {
+		b.liderIDMu.RLock()
+		lID := b.liderID
+		sEl := b.statusEleicao
+		b.liderIDMu.RUnlock()
+
 		hb := models.MensagemBroker{
-			Tipo:        models.MsgHeartbeat,
-			BrokerID:    b.id,
-			SetorID:     b.setorID,
-			Timestamp:   time.Now(),
-			LamportTime: b.tick(),
+			Tipo:          models.MsgHeartbeat,
+			BrokerID:      b.id,
+			SetorID:       b.setorID,
+			LiderID:       lID,
+			StatusEleicao: sEl,
+			Timestamp:     time.Now(),
+			LamportTime:   b.tick(),
 		}
 		b.broadcastVizinhos(hb)
 	}
@@ -1119,6 +1199,14 @@ func (b *Broker) loopDetectarFalhas() {
 					b.logger.Printf("Broker %s presumido morto (sem HB há %s). Ativando rotinas de Failover!", id, agora.Sub(ultimo).Round(time.Second))
 					b.brokersMortos[id] = true
 					go b.verificarEAtivarFailover(id)
+
+					b.liderIDMu.RLock()
+					lCur := b.liderID
+					b.liderIDMu.RUnlock()
+					if id == lCur {
+						b.logger.Printf("[ELEIÇÃO] Líder %s caiu. Iniciando processo de eleição!", id)
+						go b.iniciarEleicao()
+					}
 				}
 				b.brokersMortosMu.Unlock()
 			}
@@ -1196,6 +1284,113 @@ func (b *Broker) verificarEAtivarFailover(deadBrokerID string) {
 			break
 		}
 	}
+}
+
+func obterNumID(id string) int {
+	var n int
+	_, err := fmt.Sscanf(id, "B%d", &n)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func (b *Broker) iniciarEleicao() {
+	b.eleicaoMu.Lock()
+	if b.statusEleicao == "EM_ELEICAO" {
+		b.eleicaoMu.Unlock()
+		return
+	}
+	b.statusEleicao = "EM_ELEICAO"
+	b.okRecebido = false
+	b.eleicaoMu.Unlock()
+
+	b.logger.Printf("[ELEIÇÃO] Iniciando processo de eleição. Meu ID: %s", b.id)
+
+	// Avisa o monitor/rede que a eleição começou
+	b.broadcastVizinhos(models.MensagemBroker{
+		Tipo:          models.MsgEleicao,
+		BrokerID:      b.id,
+		StatusEleicao: "EM_ELEICAO",
+		LiderID:       "SELECIONANDO...",
+		Timestamp:     time.Now(),
+		LamportTime:   b.tick(),
+	})
+
+	meuNum := obterNumID(b.id)
+	enviouParaMaior := false
+
+	b.vizinhosMu.RLock()
+	for id, conn := range b.vizinhos {
+		if !eIDBrokerValido(id) {
+			continue
+		}
+		numVizinho := obterNumID(id)
+		if numVizinho > meuNum {
+			enviouParaMaior = true
+			msg := models.MensagemBroker{
+				Tipo:        models.MsgEleicao,
+				BrokerID:    b.id,
+				Timestamp:   time.Now(),
+				LamportTime: b.tick(),
+			}
+			go func(c net.Conn) {
+				c.SetWriteDeadline(time.Now().Add(2 * time.Second))
+				json.NewEncoder(c).Encode(msg)
+			}(conn)
+		}
+	}
+	b.vizinhosMu.RUnlock()
+
+	if !enviouParaMaior {
+		b.logger.Printf("[ELEIÇÃO] Sou o broker de maior ID ativo (%s). Me declarando líder!", b.id)
+		b.declararLider()
+		return
+	}
+
+	// Aguarda resposta OK dos maiores
+	go func() {
+		time.Sleep(2 * time.Second)
+		b.eleicaoMu.Lock()
+		defer b.eleicaoMu.Unlock()
+
+		if b.statusEleicao == "EM_ELEICAO" && !b.okRecebido {
+			b.logger.Printf("[ELEIÇÃO] Timeout aguardando OK dos brokers maiores. Me declarando líder!")
+			b.declararLider()
+		} else if b.statusEleicao == "EM_ELEICAO" && b.okRecebido {
+			b.logger.Printf("[ELEIÇÃO] OK recebido de broker maior. Aguardando MsgCoordenador...")
+			// Timeout para esperar o coordenador se anunciar
+			go func() {
+				time.Sleep(4 * time.Second)
+				b.eleicaoMu.Lock()
+				defer b.eleicaoMu.Unlock()
+				if b.statusEleicao == "EM_ELEICAO" {
+					b.logger.Printf("[ELEIÇÃO] Novo coordenador não se anunciou a tempo. Reiniciando eleição...")
+					b.statusEleicao = "ESTAVEL"
+					go b.iniciarEleicao()
+				}
+			}()
+		}
+	}()
+}
+
+func (b *Broker) declararLider() {
+	b.liderIDMu.Lock()
+	b.liderID = b.id
+	b.statusEleicao = "ESTAVEL"
+	b.liderIDMu.Unlock()
+
+	b.logger.Printf("[ELEIÇÃO] Eleição concluída! Eu (%s) sou o novo líder.", b.id)
+
+	msg := models.MensagemBroker{
+		Tipo:          models.MsgCoordenador,
+		BrokerID:      b.id,
+		LiderID:       b.id,
+		StatusEleicao: "ESTAVEL",
+		Timestamp:     time.Now(),
+		LamportTime:   b.tick(),
+	}
+	b.broadcastVizinhos(msg)
 }
 
 func (b *Broker) loopEnvelhecerFila() {
