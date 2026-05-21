@@ -17,58 +17,7 @@ No cenário original, uma arquitetura centralizada cria um ponto único de falha
 
 ### 2.1 Diagrama da Arquitetura
 
-```mermaid
-graph TD
-    classDef broker fill:#2a9d8f,stroke:#264653,stroke-width:2px,color:#fff;
-    classDef sensor fill:#e76f51,stroke:#264653,stroke-width:2px,color:#fff;
-    classDef drone fill:#e9c46a,stroke:#264653,stroke-width:2px,color:#000;
-    classDef monitor fill:#457b9d,stroke:#1d3557,stroke-width:2px,color:#fff;
-    classDef multicast fill:#a8dadc,stroke:#457b9d,stroke-width:2px,color:#000;
-
-    subgraph Sensores[Camada de Aquisição]
-        S1[Radar]:::sensor
-        S2[Sonar]:::sensor
-        S3[Boia / Visual / Meteo]:::sensor
-    end
-
-    MG((Grupo Multicast UDP\n224.1.2.3:9876)):::multicast
-
-    subgraph Brokers[Malha P2P - 9 Setores]
-        B9[B9 Líder\nSetor_Centro :6008]:::broker
-        B1[B1 Noroeste :6000]:::broker
-        B2[B2 Norte :6001]:::broker
-        BN[B3..B8 outros setores]:::broker
-    end
-
-    subgraph Drones[Camada de Atuação]
-        D1[Drone NW]:::drone
-        D2[Drone N]:::drone
-        D3[Drone C]:::drone
-    end
-
-    MON[Monitor\nDashboard :8085]:::monitor
-
-    S1 -.->|Broadcast UDP| MG
-    S2 -.->|Broadcast UDP| MG
-    S3 -.->|Broadcast UDP| MG
-
-    MG -.->|Escuta Multicast| B1
-    MG -.->|Escuta Multicast| B2
-    MG -.->|Escuta Multicast| B9
-    MG -.->|Escuta Multicast| BN
-
-    B9 <-->|Gossip / Heartbeat TCP| B1
-    B9 <-->|Gossip / Heartbeat TCP| B2
-    B9 <-->|Gossip / Heartbeat TCP| BN
-    B1 <-->|Gossip / Heartbeat TCP| B2
-
-    D1 ==>|TCP Registro/Estado| B1
-    D2 ==>|TCP Registro/Estado| B2
-    D3 ==>|TCP Registro/Estado| B9
-
-    B9 -->|TCP Observer| MON
-    MON <-->|WebSocket| UI[Painel Web]
-```
+![Arquitetura HormuzNet](images/arquitetura_hormuz.png)
 
 ### 2.2 Componentes Principais
 
