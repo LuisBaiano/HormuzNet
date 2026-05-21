@@ -5,7 +5,7 @@
 #   - 1 Broker Líder (B9 / Setor_Centro)
 #   - 8 Brokers Seguidores (B1–B8)
 #   - 1 Monitor (dashboard web na porta 8085)
-#   - 7 Drones distribuídos pelos setores cardinais e central
+#   - 6 Drones distribuídos pelos setores cardinais e central
 #   - 18 Sensores (2 por broker), com tipo e posição gerados aleatoriamente
 # Útil para testes locais completos sem distribuição entre múltiplos hosts.
 # Uso: python3 generate_all.py   →  gera docker-compose-all.yml na raiz
@@ -70,8 +70,8 @@ def gerar_yaml_completo():
         "restart": "on-failure"
     }
 
-    # 4. Drones (7 drones)
-    for i in range(7):
+    # 4. Drones (6 drones)
+    for i in range(6):
         d = drones_base[i % len(drones_base)]
         id_drone = f"Drone_{d['nome'].upper()}_{i+1}"
         services[f"drone{i+1}"] = {

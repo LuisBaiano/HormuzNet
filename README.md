@@ -25,7 +25,7 @@ No cenário original, uma arquitetura centralizada cria um ponto único de falha
    - Simula dispositivos físicos: `radar`, `sonar`, `boia`, `visual`, `meteo`.
    - Gera leituras com valor, unidade e criticidade de acordo com o tipo.
    - Publica via **UDP Multicast** (`224.1.2.3:9876`) a cada intervalo configurável.
-   - 30% das leituras geram ocorrências; 2% têm injeção forçada de criticidade ALTA.
+   - 45% das leituras geram ocorrências; 7% têm injeção forçada de criticidade ALTA.
 
 2. **Broker de Setor (`cmd/broker`)**
    - Um por setor geográfico (9 setores: Noroeste, Norte, Nordeste, Leste, Sudeste, Sul, Sudoeste, Oeste, Centro).
@@ -211,7 +211,7 @@ Todas as mensagens TCP (broker↔broker, broker↔drone) usam **JSON delimitado 
 | `visual` | confiança  | valor > 0.85        | Reconhecimento óptico       |
 | `meteo`  | °C         | valor > 45 ou < -5  | Condições climáticas severas|
 
-Adicionalmente, 2% das leituras têm injeção forçada de criticidade ALTA para estressar o sistema. 70% das leituras não geram ocorrência (apenas leituras de ambiente).
+Adicionalmente, 7% das leituras têm injeção forçada de criticidade ALTA para estressar o sistema. 55% das leituras não geram ocorrência (apenas leituras de ambiente).
 
 ## 6. Estrutura de Diretórios
 
@@ -309,7 +309,7 @@ HormuzNet/
 
 ### 10.1 Execução completa em 1 máquina (ambiente monolítico)
 
-Sobe todos os 9 brokers + 7 drones + 18 sensores + monitor de uma vez:
+Sobe todos os 9 brokers + 6 drones + 18 sensores + monitor de uma vez:
 
 ```bash
 # Gera o docker-compose-all.yml com sensores aleatórios

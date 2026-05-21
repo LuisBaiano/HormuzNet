@@ -198,77 +198,65 @@ services:
     - -x=750
     - -y=750
     restart: on-failure
-  drone7:
-    build:
-      context: ./code
-      dockerfile: Dockerfile.drone
-    container_name: hormuznet_drone_c_7
-    network_mode: host
-    command:
-    - -id=Drone_C_7
-    - -brokers=127.0.0.1:6008
-    - -x=500
-    - -y=500
-    restart: on-failure
   sensor_1:
     build:
       context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_boia_noroeste_1
+    container_name: hormuznet_visual_noroeste_1
     network_mode: host
     command:
-    - -id=boia_noroeste_1
-    - -tipo=boia
+    - -id=visual_noroeste_1
+    - -tipo=visual
     - -setor=Setor_Noroeste
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=258
-    - -y=647
+    - -x=508
+    - -y=386
     restart: on-failure
   sensor_2:
     build:
       context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_boia_noroeste_2
+    container_name: hormuznet_radar_noroeste_2
     network_mode: host
     command:
-    - -id=boia_noroeste_2
-    - -tipo=boia
+    - -id=radar_noroeste_2
+    - -tipo=radar
     - -setor=Setor_Noroeste
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=319
-    - -y=856
+    - -x=617
+    - -y=441
     restart: on-failure
   sensor_3:
     build:
       context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_sonar_norte_3
+    container_name: hormuznet_meteo_norte_3
     network_mode: host
     command:
-    - -id=sonar_norte_3
-    - -tipo=sonar
+    - -id=meteo_norte_3
+    - -tipo=meteo
     - -setor=Setor_Norte
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=263
-    - -y=791
+    - -x=386
+    - -y=125
     restart: on-failure
   sensor_4:
     build:
       context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_boia_norte_4
+    container_name: hormuznet_meteo_norte_4
     network_mode: host
     command:
-    - -id=boia_norte_4
-    - -tipo=boia
+    - -id=meteo_norte_4
+    - -tipo=meteo
     - -setor=Setor_Norte
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=494
-    - -y=420
+    - -x=300
+    - -y=376
     restart: on-failure
   sensor_5:
     build:
@@ -282,53 +270,53 @@ services:
     - -setor=Setor_Nordeste
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=833
-    - -y=635
+    - -x=184
+    - -y=714
     restart: on-failure
   sensor_6:
     build:
       context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_meteo_nordeste_6
+    container_name: hormuznet_boia_nordeste_6
     network_mode: host
     command:
-    - -id=meteo_nordeste_6
-    - -tipo=meteo
+    - -id=boia_nordeste_6
+    - -tipo=boia
     - -setor=Setor_Nordeste
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=400
-    - -y=297
+    - -x=478
+    - -y=836
     restart: on-failure
   sensor_7:
     build:
       context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_meteo_leste_7
+    container_name: hormuznet_visual_leste_7
     network_mode: host
     command:
-    - -id=meteo_leste_7
-    - -tipo=meteo
+    - -id=visual_leste_7
+    - -tipo=visual
     - -setor=Setor_Leste
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=890
-    - -y=445
+    - -x=194
+    - -y=779
     restart: on-failure
   sensor_8:
     build:
       context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_meteo_leste_8
+    container_name: hormuznet_sonar_leste_8
     network_mode: host
     command:
-    - -id=meteo_leste_8
-    - -tipo=meteo
+    - -id=sonar_leste_8
+    - -tipo=sonar
     - -setor=Setor_Leste
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=108
-    - -y=618
+    - -x=127
+    - -y=349
     restart: on-failure
   sensor_9:
     build:
@@ -342,8 +330,8 @@ services:
     - -setor=Setor_Sudeste
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=837
-    - -y=800
+    - -x=542
+    - -y=370
     restart: on-failure
   sensor_10:
     build:
@@ -357,98 +345,98 @@ services:
     - -setor=Setor_Sudeste
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=877
-    - -y=512
+    - -x=109
+    - -y=555
     restart: on-failure
   sensor_11:
     build:
       context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_visual_sul_11
+    container_name: hormuznet_sonar_sul_11
     network_mode: host
     command:
-    - -id=visual_sul_11
-    - -tipo=visual
+    - -id=sonar_sul_11
+    - -tipo=sonar
     - -setor=Setor_Sul
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=894
-    - -y=785
+    - -x=425
+    - -y=838
     restart: on-failure
   sensor_12:
     build:
       context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_boia_sul_12
+    container_name: hormuznet_sonar_sul_12
     network_mode: host
     command:
-    - -id=boia_sul_12
-    - -tipo=boia
+    - -id=sonar_sul_12
+    - -tipo=sonar
     - -setor=Setor_Sul
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=132
-    - -y=185
+    - -x=680
+    - -y=620
     restart: on-failure
   sensor_13:
     build:
       context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_meteo_sudoeste_13
+    container_name: hormuznet_visual_sudoeste_13
     network_mode: host
     command:
-    - -id=meteo_sudoeste_13
-    - -tipo=meteo
+    - -id=visual_sudoeste_13
+    - -tipo=visual
     - -setor=Setor_Sudoeste
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=421
-    - -y=174
+    - -x=557
+    - -y=538
     restart: on-failure
   sensor_14:
     build:
       context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_visual_sudoeste_14
+    container_name: hormuznet_boia_sudoeste_14
     network_mode: host
     command:
-    - -id=visual_sudoeste_14
-    - -tipo=visual
+    - -id=boia_sudoeste_14
+    - -tipo=boia
     - -setor=Setor_Sudoeste
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=103
-    - -y=163
+    - -x=788
+    - -y=861
     restart: on-failure
   sensor_15:
     build:
       context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_radar_oeste_15
+    container_name: hormuznet_boia_oeste_15
     network_mode: host
     command:
-    - -id=radar_oeste_15
-    - -tipo=radar
+    - -id=boia_oeste_15
+    - -tipo=boia
     - -setor=Setor_Oeste
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=368
-    - -y=592
+    - -x=531
+    - -y=212
     restart: on-failure
   sensor_16:
     build:
       context: ./code
       dockerfile: Dockerfile.sensor
-    container_name: hormuznet_meteo_oeste_16
+    container_name: hormuznet_visual_oeste_16
     network_mode: host
     command:
-    - -id=meteo_oeste_16
-    - -tipo=meteo
+    - -id=visual_oeste_16
+    - -tipo=visual
     - -setor=Setor_Oeste
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=643
-    - -y=884
+    - -x=666
+    - -y=629
     restart: on-failure
   sensor_17:
     build:
@@ -462,8 +450,8 @@ services:
     - -setor=Setor_Centro
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=254
-    - -y=782
+    - -x=392
+    - -y=803
     restart: on-failure
   sensor_18:
     build:
@@ -477,6 +465,6 @@ services:
     - -setor=Setor_Centro
     - -broker=224.1.2.3:9876
     - -intervalo=20000
-    - -x=886
-    - -y=210
+    - -x=416
+    - -y=783
     restart: on-failure

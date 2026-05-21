@@ -69,8 +69,8 @@ func gerarLeitura(id, tipo, setor string, x, y float64) models.LeituraSensor {
 	var unidade string
 	crit := models.CriticidadeNula
 
-	// Só gera uma possível ocorrência em 30% das leituras para manter drones ocupados
-	if rand.Float64() > 0.30 {
+	// Só gera uma possível ocorrência em 45% das leituras para manter drones ocupados (aumento de 15%)
+	if rand.Float64() > 0.45 {
 		return models.LeituraSensor{
 			SensorID:    id,
 			SetorID:     setor,
@@ -131,8 +131,8 @@ func gerarLeitura(id, tipo, setor string, x, y float64) models.LeituraSensor {
 		crit = models.CriticidadeBaixa
 	}
 
-	// Injeção de eventos críticos aleatórios (2% de chance) para testar despacho de drones
-	if rand.Float64() < 0.02 {
+	// Injeção de eventos críticos aleatórios (7% de chance [aumento de 5%]) para testar despacho de drones
+	if rand.Float64() < 0.07 {
 		crit = models.CriticidadeAlta
 	}
 

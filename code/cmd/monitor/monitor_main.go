@@ -216,6 +216,31 @@ func obterBrokerID(addr string) string {
 	}
 }
 
+func obterSetorPorBrokerID(brokerID string) string {
+	switch brokerID {
+	case "B1":
+		return "Setor_Noroeste"
+	case "B2":
+		return "Setor_Norte"
+	case "B3":
+		return "Setor_Nordeste"
+	case "B4":
+		return "Setor_Leste"
+	case "B5":
+		return "Setor_Sudeste"
+	case "B6":
+		return "Setor_Sul"
+	case "B7":
+		return "Setor_Sudoeste"
+	case "B8":
+		return "Setor_Oeste"
+	case "B9":
+		return "Setor_Centro"
+	default:
+		return ""
+	}
+}
+
 func addEvento(tipo, msg, nivel string) {
 	estadoMu.Lock()
 	eventos = append(eventos, EventoLog{
@@ -342,6 +367,23 @@ func processarMensagem(msg models.MensagemBroker, addr string) {
 		if bStatus != nil {
 			bStatus.Vivo = true
 			bStatus.UltimoHB = time.Now()
+
+			// Se o broker está vivo, garante que o failover do seu setor original seja removido
+			setor := obterSetorPorBrokerID(bID)
+			if setor != "" {
+				if _, isFailoverActive := failovers[setor]; isFailoverActive {
+					delete(failovers, setor)
+					eventos = append(eventos, EventoLog{
+						Timestamp: time.Now(),
+						Tipo:      "RECUPERACAO",
+						Mensagem:  fmt.Sprintf("Broker %s voltou e recuperou o setor %s", bID, setor),
+						Nivel:     "info",
+					})
+					if len(eventos) > 100 {
+						eventos = eventos[len(eventos)-100:]
+					}
+				}
+			}
 		}
 	}
 	estadoMu.Unlock()

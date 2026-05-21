@@ -1,26 +1,12 @@
 version: '3.8'
 services:
-  drone1:
+  monitor:
     build:
       context: ./code
-      dockerfile: Dockerfile.drone
-    container_name: hormuznet_drone_nw_1
+      dockerfile: Dockerfile.monitor
+    container_name: hormuznet_monitor
     network_mode: host
     command:
-    - -id=Drone_NW_1
-    - -brokers=192.168.101.14:6008
-    - -x=250
-    - -y=250
-    restart: on-failure
-  drone2:
-    build:
-      context: ./code
-      dockerfile: Dockerfile.drone
-    container_name: hormuznet_drone_n_2
-    network_mode: host
-    command:
-    - -id=Drone_N_2
-    - -brokers=192.168.101.14:6008
-    - -x=500
-    - -y=250
+    - -brokers=192.168.10.127:6008
+    - -porta=8085
     restart: on-failure

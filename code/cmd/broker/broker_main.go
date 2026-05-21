@@ -752,16 +752,6 @@ func (b *Broker) conectarVizinho(addr string, isDiscovery bool) {
 	for {
 		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 		if err != nil {
-			if isDiscovery {
-				// Para descoberta dinâmica, desiste após algumas tentativas
-				if backoff > 10*time.Second {
-					b.logger.Printf("Desistindo de conectar ao peer descoberto %s", addr)
-					b.peersConhecidosMu.Lock()
-					delete(b.peersConhecidos, addr)
-					b.peersConhecidosMu.Unlock()
-					return
-				}
-			}
 			b.logger.Printf("Falha ao conectar vizinho %s: %v — retry em %s", addr, err, backoff)
 			time.Sleep(backoff)
 			if backoff < 30*time.Second {
@@ -821,14 +811,6 @@ func (b *Broker) conectarVizinho(addr string, isDiscovery bool) {
 		}
 		b.vizinhosMu.Unlock()
 		conn.Close()
-		
-		if isDiscovery {
-			b.logger.Printf("Vizinho dinâmico %s desconectou.", addr)
-			b.peersConhecidosMu.Lock()
-			delete(b.peersConhecidos, addr)
-			b.peersConhecidosMu.Unlock()
-			return
-		}
 		
 		b.logger.Printf("Vizinho %s desconectou — reconectando em %s", addr, backoff)
 		time.Sleep(backoff)
@@ -935,12 +917,18 @@ func (b *Broker) processarMensagemBroker(msg models.MensagemBroker, conn net.Con
 
 	b.brokersMortosMu.Lock()
 	if b.brokersMortos[msg.BrokerID] {
-		b.logger.Printf("Broker %s voltou à vida! Retornando o controle do setor %s para ele.", msg.BrokerID, msg.SetorID)
+		setorRecuperado := msg.SetorID
+		if setorRecuperado == "" {
+			b.setoresConhecidosMu.RLock()
+			setorRecuperado = b.setoresConhecidos[msg.BrokerID]
+			b.setoresConhecidosMu.RUnlock()
+		}
+		b.logger.Printf("Broker %s voltou à vida! Retornando o controle do setor %s para ele.", msg.BrokerID, setorRecuperado)
 		b.brokersMortos[msg.BrokerID] = false
 		b.broadcastVizinhos(models.MensagemBroker{
 			Tipo:        models.MsgFailoverRecuperado,
 			BrokerID:    msg.BrokerID,
-			SetorID:     msg.SetorID,
+			SetorID:     setorRecuperado,
 			Timestamp:   time.Now(),
 			LamportTime: b.tick(),
 		})
