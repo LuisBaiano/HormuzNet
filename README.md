@@ -1,494 +1,397 @@
 # HormuzNet — TEC502 - Problema 2 (Estreito de Ormuz)
 
-Sistema de monitoramento marítimo distribuído e autônomo para o Estreito de Ormuz, desenvolvido sem framework de mensageria, usando apenas comunicação nativa da arquitetura da Internet (UDP Multicast / TCP / WebSocket).
+Sistema de monitoramento marítimo distribuído, tolerante a falhas e autônomo para o Estreito de Ormuz, desenvolvido em Go sem o uso de middlewares ou frameworks de mensageria comerciais (como RabbitMQ ou Kafka), utilizando apenas a comunicação nativa da arquitetura de redes da Internet (UDP Multicast / TCP / WebSockets).
 
-## 1. Objetivo do Projeto
+## 1. Cenário e Objetivo do Projeto
 
-Este projeto resolve o problema de monitoramento e resposta tática em uma região marítima estratégica de alta criticidade — o Estreito de Ormuz — por meio de uma **malha cooperativa descentralizada de brokers P2P**, sensores inteligentes e drones autônomos.
+O Estreito de Ormuz é uma das vias marítimas mais estratégicas e críticas do mundo, por onde transita cerca de um quinto do consumo mundial de petróleo. Monitorar esta área contra incidentes, ameaças e falhas operacionais é de extrema importância. 
 
-No cenário original, uma arquitetura centralizada cria um ponto único de falha: se o servidor cair, toda a vigilância colapsa. Nesta solução:
+Em uma arquitetura centralizada clássica, a queda do servidor central interromperia instantaneamente todo o monitoramento e o envio de respostas táticas. Para evitar esse ponto único de falha, o **HormuzNet** estabelece uma **malha cooperativa descentralizada de brokers P2P**, sensores inteligentes e drones (VANTs) autônomos.
 
-- sensores publicam leituras via **UDP Multicast** para todos os brokers simultaneamente;
-- brokers formam uma **malha TCP P2P** com descoberta dinâmica e sincronização via Gossip;
-- drones conectam-se via TCP ao broker mais próximo e executam missões de forma autônoma;
-- o monitor consolida o estado global e expõe um **dashboard Web em tempo real via WebSocket**.
+Nesta solução distribuída:
+- **Sensores de Campo** publicam leituras via **UDP Multicast** para todos os brokers de forma simultânea.
+- **Brokers de Setor** formam uma malha TCP P2P dinâmica que se auto-organiza via **Descoberta Dinâmica**, **Consenso Lógico de Lamport**, **Protocolo Gossip**, **Eleição Bully** e **Ring Failover**.
+- **Drones Autônomos** acoplam-se via TCP ao broker ativo responsável pelo seu setor físico e realizam missões sob demanda, possuindo tolerância a quedas e reconexão com fallback automático.
+- **Monitores** consolidam e de-duplicam o estado global, servindo uma interface gráfica em tempo real via **WebSockets (RFC 6455)** implementados nativamente.
 
-## 2. Arquitetura e Componentes
+---
+
+## 2. Arquitetura do Sistema
 
 ### 2.1 Diagrama da Arquitetura
 
+O sistema é dividido de forma a desacoplar a geração de eventos da lógica de despacho e do monitoramento tático:
+
 ![Arquitetura HormuzNet](images/arquitetura.png)
 
-### 2.2 Componentes Principais
+### 2.2 Divisão Geográfica e de Portas TCP
 
-1. **Sensor (`cmd/sensor`)**
-   - Simula dispositivos físicos: `radar`, `sonar`, `boia`, `visual`, `meteo`.
-   - Gera leituras com valor, unidade e criticidade de acordo com o tipo.
-   - Publica via **UDP Multicast** (`224.1.2.3:9876`) a cada intervalo configurável.
-   - 45% das leituras geram ocorrências; 7% têm injeção forçada de criticidade ALTA.
+O Estreito de Ormuz é mapeado em 9 setores dispostos em uma grade virtual. Cada setor possui um broker responsável e uma porta TCP de escuta padrão:
 
-2. **Broker de Setor (`cmd/broker`)**
-   - Um por setor geográfico (9 setores: Noroeste, Norte, Nordeste, Leste, Sudeste, Sul, Sudoeste, Oeste, Centro).
-   - Escuta UDP Multicast e filtra eventos do seu setor.
-   - Mantém fila de prioridades ordenada por Relógio de Lamport.
-   - Sincroniza estado de drones e ocorrências com vizinhos via Gossip TCP.
-   - Dispara heartbeats periódicos e detecta falhas de vizinhos.
-   - Executa **Ring Failover** quando um broker vizinho cai.
-   - Despacha o drone disponível mais próximo de forma pró-ativa.
+| Broker | Setor Relacionado | Porta TCP | Posição Base do Setor |
+| :--- | :--- | :--- | :--- |
+| **B1** | Noroeste | 6000 | (250, 250) |
+| **B2** | Norte | 6001 | (500, 250) |
+| **B3** | Nordeste | 6002 | (750, 250) |
+| **B4** | Leste | 6003 | (750, 500) |
+| **B5** | Sudeste | 6004 | (750, 750) |
+| **B6** | Sul | 6005 | (500, 750) |
+| **B7** | Sudoeste | 6006 | (250, 750) |
+| **B8** | Oeste | 6007 | (250, 500) |
+| **B9** | Centro *(Líder Inicial)* | 6008 | (500, 500) |
 
-3. **Drone (`cmd/drone`)**
-   - VANT autônomo que se conecta via TCP a um broker com fallback automático.
-   - Reporta posição e estado por keepalive periódico a cada 3s.
-   - Executa missões: deslocamento → operação → retorno.
-   - Simula 10% de chance de abate durante a missão (força replanejamento).
+---
 
-4. **Monitor (`cmd/monitor`)**
-   - Conecta-se ao Broker Líder e descobre automaticamente os demais via `PEER_LIST`.
-   - De-duplica eventos recebidos de múltiplos brokers.
-   - Detecta brokers inativos por timeout de heartbeat (15s).
-   - Serve dashboard HTML/CSS/JS embutido com **WebSocket RFC 6455** (sem libs externas).
-   - Atualiza o painel a cada 1 segundo via push de snapshot.
+## 3. Componentes do Sistema
 
-### 2.3 Fluxo Resumido
+O HormuzNet é constituído por 4 componentes independentes desenvolvidos em **Go 1.23**:
 
-1. Sensor gera leitura e publica via UDP Multicast para `224.1.2.3:9876`.
-2. Todos os brokers recebem o pacote; apenas o **responsável pelo setor** processa.
-3. O broker cria uma Ocorrência, enfileira com timestamp de Lamport e faz broadcast Gossip para vizinhos.
-4. O loop de despacho (`loopDespachar`) seleciona o drone local disponível mais próximo e envia `DESPACHAR_DRONE` via TCP.
-5. O drone executa a missão e notifica o broker com atualizações de estado.
-6. O Monitor recebe todos esses eventos e os exibe no dashboard em tempo real.
+### 3.1 Sensor (`code/cmd/sensor`)
+Simula um dispositivo físico de monitoramento marítimo.
+- **Tipos de Sensores:** `radar` (embarcações), `sonar` (submarinos), `boia` (altura de ondas), `visual` (câmeras de reconhecimento óptico) e `meteo` (estações meteorológicas).
+- **Publicação:** Envia pacotes em JSON serializado via **UDP Multicast** no endereço de grupo `224.1.2.3:9876`.
+- **Frequência e Posição:** Envia dados em intervalos customizáveis (ex: 20s) a partir de uma coordenada cartesiana $(X, Y)$ fixa.
+- **Regra de Eventos:** Em 55% do tempo, gera dados ambientais normais (sem criticidade). Nos outros 45%, gera alertas táticos (`CriticidadeBaixa` ou `CriticidadeAlta`). Adicionalmente, possui uma taxa de injeção forçada de 7% de falhas/criticidades críticas para estressar as rotinas de despacho.
 
-### 2.4 Mapa de Setores e Portas TCP
+### 3.2 Broker de Setor (`code/cmd/broker`)
+O núcleo lógico do sistema. Gerencia as ocorrências do setor físico sob sua jurisdição.
+- **Escuta Multicast:** Lê todas as mensagens transmitidas no grupo UDP Multicast. No entanto, processa apenas os eventos correspondentes ao seu setor de responsabilidade (Filtro Geográfico) ou de setores vizinhos sob failover.
+- **Fila de Prioridades:** Ordena internamente as ocorrências de forma consistente usando o **Relógio Lógico de Lamport**.
+- **Ring Failover:** Monitora a saúde dos brokers vizinhos. Caso algum caia, o próximo broker sobrevivente na ordem circular (Anel) assume temporariamente as leituras daquele setor.
+- **Eleição Ativa (Bully):** Se o Broker Líder ficar inoperante, inicia um processo de eleição dinâmico para coordenar a rede e as atualizações do Monitor.
+- **Despacho de Recursos:** Identifica drones disponíveis e envia ordens de voo via socket TCP para o drone mais próximo da ocorrência de forma pró-ativa.
 
-| Broker | Setor         | Porta TCP |
-|--------|---------------|-----------|
-| B1     | Noroeste      | 6000      |
-| B2     | Norte         | 6001      |
-| B3     | Nordeste      | 6002      |
-| B4     | Leste         | 6003      |
-| B5     | Sudeste       | 6004      |
-| B6     | Sul           | 6005      |
-| B7     | Sudoeste      | 6006      |
-| B8     | Oeste         | 6007      |
-| B9     | Centro (Líder)| 6008      |
+### 3.3 Drone (`code/cmd/drone`)
+Veículo Aéreo Não Tripulado (VANT) encarregado de verificar as ocorrências no local.
+- **Conectividade:** Conecta-se via socket TCP a uma lista de brokers de setor com mecanismo de **fallback dinâmico** e recarga automática (backoff exponencial de até 30s).
+- **Relatório de Estado:** Envia keepalives periódicos (a cada 3s) ao broker informando sua posição física e estado operacional (`DISPONIVEL`, `DESPACHADO`, `EM_MISSAO`, `RETORNANDO`, `ABATIDO`).
+- **Navegação Física:** Desloca-se até as coordenadas cartesianas do sensor da ocorrência, executa a operação (simulando um tempo de ação de 4 a 8 segundos) e retorna ao seu setor de patrulha original.
+- **Simulação de Abate:** Possui uma chance aleatória de 10% de ser abatido ou avariado em trânsito. O processo do drone é finalizado e o broker re-enfileira a ocorrência imediatamente.
 
-## 3. Mecanismos Distribuídos
+### 3.4 Monitor (`code/cmd/monitor`)
+A central de exibição tática e consolidação de logs.
+- **Descoberta Automática (Auto-discovery):** Conecta-se a um broker (preferencialmente o líder) e, através da mensagem `PEER_LIST`, descobre e se conecta via TCP a todos os outros brokers da malha.
+- **De-duplicação:** Brokers redundantes podem retransmitir mensagens semelhantes. O monitor unifica o fluxo, evitando poluição visual.
+- **WebSocket RFC 6455:** Contém um servidor de WebSocket implementado do zero para enviar snapshots JSON consolidados de 1 em 1 segundo para a interface web.
+- **Painel Tático:** Página HTML interativa rodando na porta `8085` com mapa de posicionamento, log de eventos globais, status detalhado de brokers/drones e fila de ocorrências ativas.
 
-### 3.1 Relógio de Lamport
+---
 
-Cada broker mantém um contador lógico (`lamport`). A cada evento gerado localmente o contador é incrementado (`tick`). Ao receber uma mensagem de outro broker, o relógio é sincronizado com `max(local, recebido) + 1`. A fila de prioridades usa `LamportTime` para ordenação global consistente entre todos os nós.
+## 4. Lógicas Distribuídas e Tolerância a Falhas
 
-### 3.2 Gossip P2P e Descoberta Dinâmica
+### 4.1 Consenso e Relógio Lógico de Lamport
+Para garantir que todos os brokers ordenem as ocorrências na mesma ordem global, o sistema utiliza o **Relógio de Lamport**:
+1. Cada broker possui um contador lógico local initialized em `0`.
+2. Ao registrar uma ocorrência local, o broker incrementa o relógio: $L_{local} = L_{local} + 1$.
+3. Ao enviar uma mensagem P2P, o tempo de Lamport é incluído no payload JSON.
+4. Ao receber uma mensagem, o broker sincroniza seu relógio: $L_{local} = \max(L_{local}, L_{recebido}) + 1$.
+5. A Fila de Prioridade ordena ocorrências por: `Criticidade (Alta > Baixa) -> LamportTime (Menor primeiro) -> Timestamp real (FIFO)`.
 
-Ao iniciar, um broker seguidor conecta-se ao **Broker Líder (B9)** enviando uma mensagem `DISCOVERY`. O líder responde com `PEER_LIST` contendo os endereços de todos os outros brokers conhecidos. O seguidor então estabelece conexões TCP diretas com cada peer, formando a malha completa sem IPs hardcoded.
+### 4.2 Gossip Protocol (P2P Mesh)
+Os brokers não dependem de uma topologia centralizada. A malha é estabelecida via conexões P2P TCP diretas.
+- Quando uma nova ocorrência é detectada, o broker responsável enfileira a tarefa localmente e faz um broadcast (`REQUISICAO_DRONE`) para todos os seus peers vizinhos ativos.
+- O mesmo gossip ocorre quando um drone muda de estado (`SINC_DRONE`), é despachado (`DRONE_DESPACHADO`), conclui uma missão (`MISSAO_CONCLUIDA`) ou é abatido (`DRONE_PERDIDO`).
 
-### 3.3 Ring Failover
+### 4.3 Descoberta Dinâmica de Nós (Discovery)
+Quando um broker seguidor (ex: `B1`) inicia, ele não precisa saber os IPs de todos os outros nós:
+1. O seguidor se conecta ao Broker Líder conhecido (`B9` na porta `6008`) e envia uma mensagem `DISCOVERY` informando sua porta TCP local.
+2. O Líder insere esse novo broker na lista de peers conhecidos e responde com um pacote `PEER_LIST` contendo o IP:PORTA de todos os brokers já registrados na malha.
+3. O Líder também envia um broadcast `PEER_LIST` com o novo nó para todos os outros brokers existentes.
+4. Ao receber a lista de peers, os brokers avaliam se devem conectar-se ativamente ao novo nó (para evitar conexões TCP duplicadas entre os mesmos dois nós, a conexão é iniciada apenas pelo broker com menor porta TCP local).
 
-Quando um heartbeat de um vizinho expira, o broker marca-o como morto. O algoritmo de **herança em anel** ordena alfabeticamente todos os IDs de brokers e determina quem é o próximo sobrevivente na sequência circular após o broker morto. Esse broker assume o processamento dos eventos do setor vizinho sem intervenção manual.
+### 4.4 Algoritmo de Eleição Bully
+A malha do HormuzNet elege dinamicamente um coordenador para gerenciar a descoberta de peers e atuar como âncora do Monitor. O algoritmo **Bully** foi integrado para contornar falhas no Broker Líder:
+1. **Detecção de Falha:** Cada broker envia batimentos cardíacos (`HEARTBEAT`) a cada 2.5s. Se um broker seguidor não receber keepalive do Líder atual por mais de 15 segundos, ele presume a falha do coordenador e inicia o processo de eleição.
+2. **Fase de Eleição (`MsgEleicao`):** O broker que detectou a falha envia mensagens de eleição para todos os brokers ativos cujo ID numérico seja maior que o seu (ex: B3 envia para B4, B5, B6, B7, B8, B9).
+3. **Respostas (`MsgEleicaoOk`):**
+   - Se algum broker com ID maior estiver ativo, ele responde com `ELEICAO_OK` ao remetente menor e assume o início de sua própria eleição.
+   - O broker menor, ao receber um `ELEICAO_OK`, silencia-se e aguarda o anúncio do coordenador.
+4. **Coordenação (`MsgCoordenador`):** Se um broker não obtiver respostas com `ELEICAO_OK` dos IDs superiores dentro de um timeout (2s), ele se declara o novo líder e envia uma mensagem de `COORDENADOR` para todos os brokers sobreviventes da malha. O Monitor redireciona seu ponto de descoberta automaticamente.
 
-### 3.4 Despacho Pró-ativo (Sem Impasse)
+### 4.5 Ring Failover (Herança Circular)
+Se um broker responsável por um setor cai (ex: `B2` do Setor Norte), suas mensagens Multicast de sensores não seriam processadas por ninguém, deixando o setor desprotegido. O HormuzNet implementa o **Ring Failover**:
+- Todos os brokers ativos conhecem a lista de membros da malha.
+- Eles ordenam os IDs dos brokers alfabeticamente/numericamente em formato circular (ex: `B1 -> B2 -> B3 -> ... -> B9 -> B1`).
+- Se `B2` cai (verificado pela expiração de 15s de heartbeats), cada broker executa o mesmo algoritmo de herança localmente:
+  - O algoritmo avança recursivamente no anel a partir do nó morto até encontrar o primeiro broker que esteja ativo.
+  - No caso de `B2` morto, o vizinho ativo anterior (`B1`) assume a responsabilidade sobre o setor do nó caído.
+  - `B1` passa a aceitar e processar as mensagens UDP Multicast vindas do `Setor_Norte`.
+- Quando `B2` retorna e envia uma mensagem TCP na malha, o broker herdeiro detecta seu reestabelecimento, encerra o failover regional e devolve o controle do setor para o dono original (`B2`), emitindo uma notificação `FAILOVER_RECUPERADO` para a rede.
 
-O loop de despacho (`loopDespachar`, intervalo 500ms) verifica o topo da fila. Se o broker possui um drone local disponível, ele despacha imediatamente sem consultar outros brokers. Isso evita o impasse onde múltiplos brokers aguardam confirmação uns dos outros.
+### 4.6 Despacho Pró-ativo (Evitando Deadlocks)
+Para evitar situações de impasse distribuído onde múltiplos brokers tentam travar o mesmo drone simultaneamente, o HormuzNet adota a abordagem de **Despacho Pró-ativo**:
+- Cada broker gerencia localmente seus drones físicos conectados a ele (drones locais).
+- O loop de despacho roda de forma concorrente a cada 500ms.
+- Se o topo da Fila de Prioridades for uma ocorrência pendente e o broker possuir algum drone local livre, ele efetua o despacho imediatamente sem a necessidade de votação distribuída ou locks na rede.
+- O broker marca o drone como ocupado localmente, remove a tarefa da fila e emite um broadcast de `DRONE_DESPACHADO` para que todos os outros brokers sincronizem o estado do drone e removam a ocorrência de suas filas locais correspondentes.
 
-## 4. Protocolo (Mensagens e API)
+### 4.7 Envelhecimento de Ocorrências (Aging)
+Para mitigar a inanição (starvation) de ocorrências de baixa prioridade (ex: uma boia de onda de criticidade BAIXA presa atrás de múltiplos alertas de RADAR críticos), a Fila de Prioridades possui um mecanismo de envelhecimento:
+- Uma rotina roda a cada 10s no broker.
+- Se uma ocorrência permanece na fila por mais de **30 segundos** sem atendimento, sua prioridade interna de ordenação no heap aumenta em **1 nível**.
+- A prioridade pode subir até atingir a criticidade máxima (`CriticidadeAlta`), garantindo que ocorrências mais antigas subam de forma gradual e sejam atendidas pelos drones disponíveis.
 
-### 4.1 Sensor → Broker (UDP Multicast `224.1.2.3:9876`)
+---
 
-Formato `LeituraSensor` (JSON):
+## 5. Protocolo de Comunicação (Mensagens e APIs)
+
+### 5.1 Sensor → Broker (UDP Multicast)
+Enviado no grupo `224.1.2.3:9876` em JSON puro.
 
 ```json
 {
-  "sensor_id": "radar_norte_1",
-  "setor_id": "Setor_Norte",
+  "sensor_id": "radar_noroeste_2",
+  "setor_id": "Setor_Noroeste",
   "tipo": "radar",
-  "posicao": {"x": 263, "y": 791},
+  "posicao": {
+    "x": 617,
+    "y": 441
+  },
   "valor": 82.5,
   "unidade": "objetos",
   "criticidade": 2,
-  "timestamp": "2026-05-20T22:00:00Z"
+  "timestamp": "2026-05-21T23:00:00Z"
 }
 ```
 
-Criticidades: `0` = NORMAL, `1` = BAIXA, `2` = ALTA. Apenas leituras com criticidade ≥ BAIXA são enfileiradas.
+*Nota: As criticidades são mapeadas como inteiros: `0` (Normal), `1` (Baixa), `2` (Alta).*
 
-### 4.2 Broker ↔ Broker (TCP — Gossip e Sincronização)
-
-Formato `MensagemBroker` (JSON delimitado por `\n`):
+### 5.2 Broker ↔ Broker (TCP Gossip)
+Mensagens transmitidas em conexões de socket TCP persistentes. Cada mensagem termina com o caractere delimitador `\n`.
 
 ```json
 {
   "tipo": "REQUISICAO_DRONE",
-  "broker_id": "B2",
-  "setor_id": "Setor_Norte",
-  "timestamp": "2026-05-20T22:00:01Z",
-  "lamport_time": 42,
-  "ocorrencia": { ... }
+  "broker_id": "B1",
+  "setor_id": "Setor_Noroeste",
+  "timestamp": "2026-05-21T23:00:01Z",
+  "lamport_time": 14,
+  "ocorrencia": {
+    "id": "radar_noroeste_2-1779490800000000000",
+    "setor_origem": "Setor_Noroeste",
+    "broker_origem": "B1",
+    "tipo": "radar",
+    "descricao": "Sensor radar_noroeste_2: 82.50 objetos",
+    "criticidade": 2,
+    "posicao": {"x": 617, "y": 441},
+    "timestamp": "2026-05-21T23:00:00Z",
+    "lamport_time": 14
+  }
 }
 ```
 
-Tipos de mensagem broker↔broker:
+#### Tipos de Mensagens de Malha (Broker ↔ Broker):
+- `REGISTRO`: Handshake e identificação inicial ao conectar.
+- `DISCOVERY`: Enviado por novos seguidores para solicitar peers ao Líder.
+- `PEER_LIST`: Lista enviada pelo Líder contendo os endereços IP:PORTA conhecidos.
+- `HEARTBEAT`: Batimento cardíaco periódico enviado a cada 2.5s para monitoramento de saúde.
+- `REQUISICAO_DRONE`: Dispara uma nova ocorrência na malha distribuída.
+- `DRONE_DESPACHADO`: Avisa que um drone foi acoplado e decolou para atender um incidente.
+- `SINC_DRONE`: Sincroniza informações de posição, estado e ociosidade de um drone.
+- `DRONE_PERDIDO`: Notifica a malha que um drone foi destruído (queda TCP ou simulação de abate).
+- `MISSAO_CONCLUIDA`: Informa o sucesso do resgate e a liberação do drone.
+- `REPLICA_FILA`: Envia um instantâneo das ocorrências sob custódia para brokers que se conectaram recentemente.
+- `FAILOVER`: Notifica que um broker assumiu um setor órfão.
+- `FAILOVER_RECUPERADO`: Notifica a devolução de posse do setor para o broker original restaurado.
+- `ELEICAO`: Inicia o pleito do algoritmo Bully de eleição de coordenador.
+- `ELEICAO_OK`: Mensagem de resposta indicando que um nó de maior ID assumiu a disputa.
+- `COORDENADOR`: Declaratório de novo coordenador/líder eleito na malha.
 
-| Tipo                  | Descrição                                              |
-|-----------------------|--------------------------------------------------------|
-| `REGISTRO`            | Handshake inicial entre brokers                        |
-| `DISCOVERY`           | Seguidor solicita lista de peers ao Líder              |
-| `PEER_LIST`           | Líder responde com endereços conhecidos                |
-| `HEARTBEAT`           | Sinal de vida periódico (5s)                           |
-| `REQUISICAO_DRONE`    | Broadcast de nova ocorrência para a malha              |
-| `DRONE_DESPACHADO`    | Notifica que um drone foi alocado para a ocorrência    |
-| `SINC_DRONE`          | Atualiza o estado/posição de um drone na malha         |
-| `DRONE_PERDIDO`       | Notifica abate ou desconexão de drone                  |
-| `MISSAO_CONCLUIDA`    | Drone retornou e ocorrência está encerrada             |
-| `FAILOVER`            | Broker assumiu setor de vizinho morto                  |
-| `FAILOVER_RECUPERADO` | Vizinho voltou, setor devolvido                        |
-| `REPLICA_FILA`        | Snapshot de ocorrências pendentes para sincronização   |
+### 5.3 Broker ↔ Drone (TCP)
+#### Handshake inicial do Drone (`REGISTRO_DRONE`):
+```json
+{
+  "tipo": "REGISTRO_DRONE",
+  "drone_id": "Drone_NW_1",
+  "timestamp": "2026-05-21T23:00:02Z",
+  "drone_info": {
+    "drone_id": "Drone_NW_1",
+    "broker_id": "B1",
+    "estado": "DISPONIVEL",
+    "posicao": {"x": 250, "y": 250},
+    "ultima_vez": "2026-05-21T23:00:02Z"
+  }
+}
+```
 
-### 4.3 Broker → Drone (TCP)
+#### Keepalive periódico do Drone (`KEEPALIVE_DRONE`):
+```json
+{
+  "tipo": "KEEPALIVE_DRONE",
+  "drone_id": "Drone_NW_1",
+  "timestamp": "2026-05-21T23:00:05Z",
+  "drone_info": {
+    "drone_id": "Drone_NW_1",
+    "broker_id": "B1",
+    "estado": "DISPONIVEL",
+    "posicao": {"x": 250, "y": 250},
+    "ultima_vez": "2026-05-21T23:00:05Z"
+  }
+}
+```
 
-Handshake: drone envia `REGISTRO_DRONE` ao conectar com `InfoDrone` completo.
-Keepalive: drone envia `KEEPALIVE_DRONE` a cada 3s com posição atual.
-
-Comando de despacho `ComandoDrone`:
-
+#### Comando de despacho enviado pelo Broker (`DESPACHAR_DRONE`):
 ```json
 {
   "tipo": "DESPACHAR_DRONE",
-  "ocorrencia_id": "radar_norte_1-1716242401000000000",
-  "setor_destino": "Setor_Norte",
-  "posicao_alvo": {"x": 263, "y": 791},
-  "timestamp": "2026-05-20T22:00:02Z"
+  "ocorrencia_id": "radar_noroeste_2-1779490800000000000",
+  "setor_destino": "Setor_Noroeste",
+  "posicao_alvo": {"x": 617, "y": 441},
+  "timestamp": "2026-05-21T23:00:06Z"
 }
 ```
 
-Resposta do drone `MensagemDrone`:
-
+#### Resposta de mudança de estado do Drone (`DRONE_ESTADO`):
 ```json
 {
   "tipo": "DRONE_ESTADO",
   "drone_id": "Drone_NW_1",
   "novo_estado": "EM_MISSAO",
-  "ocorrencia_id": "radar_norte_1-...",
-  "posicao": {"x": 263, "y": 791},
-  "timestamp": "2026-05-20T22:00:05Z"
+  "ocorrencia_id": "radar_noroeste_2-1779490800000000000",
+  "posicao": {"x": 617, "y": 441},
+  "timestamp": "2026-05-21T23:00:08Z"
 }
 ```
 
-Estados do drone: `DISPONIVEL` → `DESPACHADO` → `EM_MISSAO` → `RETORNANDO` → `DISPONIVEL` (ou `ABATIDO`).
+---
 
-### 4.4 Monitor ↔ Dashboard (WebSocket `/ws`)
-
-O monitor implementa WebSocket RFC 6455 do zero (sem bibliotecas externas). Publica um snapshot completo a cada 1s:
-
-```json
-{
-  "drones": { "Drone_NW_1": { "drone_id": "...", "estado": "DISPONIVEL", ... } },
-  "brokers": [ { "id": "B9", "addr": "127.0.0.1:6008", "vivo": true, ... } ],
-  "eventos": [ { "timestamp": "...", "tipo": "DESPACHO", "mensagem": "...", "nivel": "warn" } ],
-  "ocorrencias": { "id-...": { "tipo": "radar", "criticidade": "ALTA", "status": "ANDAMENTO" } },
-  "failovers": { "Setor_Norte": "B2" }
-}
-```
-
-### 4.5 Endpoints HTTP do Monitor
-
-| Método | Rota         | Descrição                          |
-|--------|--------------|------------------------------------|
-| `GET`  | `/`          | Dashboard HTML completo embutido   |
-| `GET`  | `/ws`        | WebSocket para atualizações ao vivo|
-| `GET`  | `/api/estado`| Snapshot JSON do estado atual      |
-
-### 4.6 Regras de Framing TCP
-
-Todas as mensagens TCP (broker↔broker, broker↔drone) usam **JSON delimitado por nova linha** (`\n`). Cada peer lê com `bufio.Scanner`, que isola linhas automaticamente.
-
-## 5. Tipos de Sensores e Lógica de Criticidade
-
-| Tipo     | Unidade    | Limiar ALTA         | Exemplo de uso              |
-|----------|------------|---------------------|-----------------------------|
-| `radar`  | objetos    | valor > 75          | Detecção de embarcações     |
-| `sonar`  | dB         | valor > 100         | Detecção de submarinos      |
-| `boia`   | m          | valor > 7           | Altura de ondas anômalas    |
-| `visual` | confiança  | valor > 0.85        | Reconhecimento óptico       |
-| `meteo`  | °C         | valor > 45 ou < -5  | Condições climáticas severas|
-
-Adicionalmente, 7% das leituras têm injeção forçada de criticidade ALTA para estressar o sistema. 55% das leituras não geram ocorrência (apenas leituras de ambiente).
-
-## 6. Estrutura de Diretórios
+## 6. Estrutura de Diretórios do Repositório
 
 ```text
 HormuzNet/
-├── code/
+├── code/                           # Código fonte da aplicação em Go
 │   ├── cmd/
 │   │   ├── broker/
-│   │   │   └── broker_main.go      # Broker de setor (P2P, Gossip, Failover)
+│   │   │   └── broker_main.go      # Regras do Broker (Failover, Gossip, Despacho, Bully)
 │   │   ├── drone/
-│   │   │   └── drone_main.go       # VANT autônomo com fallback TCP
+│   │   │   └── drone_main.go       # Simulador do Drone autônomo com fallback TCP
 │   │   ├── monitor/
-│   │   │   └── monitor_main.go     # Dashboard e consolidador WebSocket
+│   │   │   └── monitor_main.go     # Hub WebSocket e servidor de dashboard tático
 │   │   └── sensor/
-│   │       └── sensor_main.go      # Sensor UDP Multicast simulado
+│   │       └── sensor_main.go      # Emulador de sensor físico UDP Multicast
 │   ├── internal/
-│   │   ├── fila/                   # Fila de prioridades (Lamport)
+│   │   ├── fila/
+│   │   │   └── fila.go             # Fila de prioridade heap com envelhecimento (Aging)
 │   │   └── models/
-│   │       └── dados.go            # Structs e tipos compartilhados
-│   ├── assets/                     # Recursos estáticos do dashboard
-│   ├── generate_dynamic.py         # Gerador de docker-compose por modo/PC
-│   ├── Dockerfile.broker
-│   ├── Dockerfile.drone
-│   ├── Dockerfile.monitor
-│   ├── Dockerfile.sensor
-│   └── go.mod
+│   │       └── dados.go            # Tipos de dados, enums e structs JSON compartilhadas
+│   ├── Dockerfile.broker           # Build do contêiner Docker do Broker
+│   ├── Dockerfile.drone            # Build do contêiner Docker do Drone
+│   ├── Dockerfile.monitor          # Build do contêiner Docker do Monitor
+│   ├── Dockerfile.sensor           # Build do contêiner Docker do Sensor
+│   ├── generate_dynamic.py         # Script Python gerador de docker-compose para multi-host
+│   └── go.mod                      # Módulo Go do HormuzNet
 ├── images/
-│   └── arquitetura_hormuz.png
-├── docs/
-│   └── (PDFs e especificação do problema)
-├── docker-compose-all.yml          # Compose completo (ambiente monolítico)
-├── generate_all.py                 # Gera docker-compose-all.yml
-├── menu.sh                         # Menu interativo multi-PC
-├── eliminar.sh                     # Para/remove contêineres ativos
-└── terminais.sh                    # Abre logs individuais em terminais
+│   └── arquitetura.png             # Diagrama arquitetural incorporado no README
+├── docs/                           # Relatórios técnicos e especificação do problema
+│   ├── TEC502 - Problema2 - Desbloqueio do Estreito de Ormuz.pdf
+│   └── Barema P2 Estreito de Ormuz.pdf
+├── docker-compose-all.yml          # Compose monolítico com 34 contêineres unificados
+├── generate_all.py                 # Script Python gerador do docker-compose-all.yml
+├── menu.sh                         # CLI interativa para controle distribuído (multi-host)
+├── eliminar.sh                     # Utilitário Bash para remoção rápida de contêineres ativos
+└── terminais.sh                    # Script Bash para abrir logs dos contêineres em abas/janelas
 ```
 
-## 7. Pacotes e Tecnologias
+---
 
-- **Go 1.23** — linguagem principal de todos os serviços
-- **Biblioteca padrão Go** — `net`, `encoding/json`, `sync`, `bufio`, `flag`, `log`
-- **Python 3** — scripts geradores de docker-compose (`generate_dynamic.py`, `generate_all.py`)
-- **Docker / Docker Compose** — containerização e orquestração
-- **WebSocket RFC 6455** — implementado do zero no monitor (sem `gorilla/websocket`)
-- **UDP Multicast** — grupo `224.1.2.3:9876` para publicação de sensores
+## 7. Pré-requisitos para Execução
 
-## 8. Pré-requisitos
+- **Docker Engine 20+** e **Docker Compose** (suporta plugin v2 `docker compose` ou standalone `docker-compose`).
+- **Python 3** com biblioteca `PyYAML` instalada (necessária para rodar os scripts de orquestração `.py`).
+- **Go 1.23+** (apenas se optar por rodar os binários diretamente em modo bare-metal, fora de contêineres).
+- Sistema Operacional **Linux** de preferência (o modo Multicast UDP e o parâmetro de rede `network_mode: host` dos contêineres necessitam de compatibilidade Linux nativa, podendo apresentar limitações no Docker para macOS/Windows).
 
-- Docker Engine 20+ (ou equivalente compatível)
-- Docker Compose v1 (standalone `docker-compose`) **ou** v2 (plugin `docker compose`) — o `menu.sh` detecta automaticamente
-- Python 3.6+ com pacote `pyyaml` (para os scripts geradores)
-- Go 1.23+ (apenas para execução sem Docker)
+---
 
-## 9. Argumentos de Linha de Comando
+## 8. Como Executar o Sistema
 
-### Broker
-
-| Flag         | Padrão            | Descrição                                          |
-|--------------|-------------------|----------------------------------------------------|
-| `-id`        | *(obrigatório)*   | ID único do broker (ex: `B1`)                      |
-| `-setor`     | *(obrigatório)*   | Nome do setor geográfico (ex: `Setor_Norte`)       |
-| `-udp`       | `224.1.2.3:9876`  | Endereço do grupo Multicast UDP                    |
-| `-tcp`       | `0.0.0.0:6000`    | Porta TCP para drones e brokers vizinhos           |
-| `-lider`     | *(vazio)*         | IP:PORT do Líder para discovery; se vazio = líder  |
-| `-vizinhos`  | *(vazio)*         | Lista de vizinhos fixos separados por vírgula      |
-
-### Drone
-
-| Flag       | Padrão              | Descrição                                          |
-|------------|---------------------|----------------------------------------------------|
-| `-id`      | *(obrigatório)*     | ID único do drone (ex: `Drone_NW_1`)               |
-| `-brokers` | `localhost:6000`    | Endereços TCP dos brokers (vírgula, fallback)      |
-| `-x`       | `0`                 | Posição X inicial no mapa                          |
-| `-y`       | `0`                 | Posição Y inicial no mapa                          |
-
-### Monitor
-
-| Flag       | Padrão           | Descrição                                           |
-|------------|------------------|-----------------------------------------------------|
-| `-brokers` | `localhost:6000` | Endereço do Broker Líder (ponto inicial de descoberta)|
-| `-porta`   | `8085`           | Porta HTTP do dashboard                             |
-
-### Sensor
-
-| Flag         | Padrão              | Descrição                                        |
-|--------------|---------------------|--------------------------------------------------|
-| `-id`        | `sensor_01`         | ID único do sensor                               |
-| `-tipo`      | `radar`             | Tipo: `radar`, `sonar`, `boia`, `visual`, `meteo`|
-| `-setor`     | `Setor_Norte`       | Setor ao qual o sensor pertence                  |
-| `-broker`    | `224.1.2.3:9876`    | Endereço Multicast UDP de destino                |
-| `-intervalo` | `1000`              | Intervalo entre leituras em milissegundos        |
-| `-x` / `-y`  | `0`                 | Posição geográfica do sensor no mapa             |
-
-## 10. Como Executar
-
-### 10.1 Execução completa em 1 máquina (ambiente monolítico)
-
-Sobe todos os 9 brokers + 6 drones + 18 sensores + monitor de uma vez:
+### 8.1 Execução Monolítica (Tudo em 1 só Máquina)
+Ideal para testes locais rápidos, inicializando 9 brokers, 6 drones, 18 sensores e o monitor de controle centralizado em um só host.
 
 ```bash
-# Gera o docker-compose-all.yml com sensores aleatórios
+# 1. Acesse o diretório do projeto
+cd HormuzNet
+
+# 2. Gere o arquivo compose completo de simulação
 python3 generate_all.py
 
-# Sobe tudo
-docker compose -f docker-compose-all.yml up --build
+# 3. Compile e suba todos os contêineres em segundo plano
+docker compose -f docker-compose-all.yml up -d --build
 ```
+Acesse a página de visualização tática no navegador em: `http://localhost:8085`.
 
-Acesso: `http://localhost:8085`
+### 8.2 Execução Distribuída (Multi-PC/Máquinas Virtuais na mesma Rede Local)
+O HormuzNet foi projetado para rodar de forma descentralizada em diferentes computadores interconectados no mesmo switch físico ou sub-rede L2.
 
-### 10.2 Execução com menu interativo (recomendado para multi-PC)
+#### Passo 1: Executar o Broker Líder na Máquina A
+1. Abra o console do terminal no projeto e execute o menu interativo:
+   ```bash
+   ./menu.sh
+   ```
+2. Digite a opção `1` (**Subir Broker Líder (Centro/B9)**).
+3. O terminal irá construir e disparar o contêiner B9 e exibirá o IP físico da máquina (ex: `192.168.100.15`). Anote este IP.
 
-```bash
-./menu.sh
-```
+#### Passo 2: Executar Brokers Seguidores na Máquina B
+1. Execute `./menu.sh` na Máquina B.
+2. Escolha a opção `2` (**Subir Brokers Adicionais (Seguidores)**).
+3. Informe o IP do Líder anotado anteriormente (`192.168.100.15`).
+4. Digite a quantidade de brokers seguidores que deseja levantar nessa máquina (ex: `4`).
+5. Informe o ID de início (se for o primeiro conjunto de seguidores, use `1` para rodar B1, B2, B3 e B4).
 
-O menu detecta automaticamente se o ambiente usa `docker compose` (v2) ou `docker-compose` (v1) e exibe:
+#### Passo 3: Executar Drones na Máquina C
+1. Execute `./menu.sh` na Máquina C.
+2. Escolha a opção `4` (**Subir Drones**).
+3. Informe o IP do Líder (`192.168.100.15`) e a quantidade de drones a subir (ex: `6`).
 
-```
-╔══════════════════════════════════════════════════════════╗
-║              HormuzNet — Painel de Controle              ║
-╚══════════════════════════════════════════════════════════╝
+#### Passo 4: Executar Sensores na Máquina D
+1. Execute `./menu.sh` na Máquina D.
+2. Escolha a opção `5` (**Subir Sensores**).
+3. Insira o IP do Líder (`192.168.100.15`), a partir de qual setor cobrir e a quantidade de sensores.
 
-Escolha um componente para subir neste PC:
-1) Subir Broker Líder (Centro/B9)
-2) Subir Brokers Adicionais (Seguidores)
-3) Subir Monitor
-4) Subir Drones
-5) Subir Sensores
-0) Sair
-```
+#### Passo 5: Inicializar o Dashboard (Pode rodar em qualquer host)
+1. Escolha a opção `3` (**Subir Monitor**) no menu de qualquer um dos computadores participantes.
+2. Forneça o IP do Líder.
+3. Abra a interface de controle no navegador de qualquer host da rede apontando para: `http://192.168.100.15:8085`.
 
-**Passo a passo:**
-- **Opção 1:** Inicia o Broker Líder (B9). O menu exibe o IP físico do PC — anote-o.
-- **Opção 2:** Cria brokers seguidores. Informe o IP do Líder e quantos brokers subir (1–8).
-- **Opção 3:** Sobe o Monitor apontando para o Líder. Dashboard disponível na porta 8085.
-- **Opção 4:** Sobe N drones autônomos conectados ao Líder.
-- **Opção 5:** Sobe sensores (2 por setor) em broadcast Multicast.
+---
 
-### 10.3 Execução em múltiplas máquinas (rede local)
+## 9. Ferramentas auxiliares de Simulação e Testes
 
-**Máquina A — Broker Líder:**
+O HormuzNet disponibiliza scripts úteis para testar a resiliência dos algoritmos distribuídos:
 
-```bash
-./menu.sh   # Opção 1
-# Anote o IP exibido, ex: 192.168.101.7
-```
-
-**Máquina B — Brokers Seguidores:**
-
-```bash
-./menu.sh   # Opção 2
-# IP do Líder: 192.168.101.7
-# Quantos brokers: 4
-```
-
-**Máquina C — Drones:**
-
-```bash
-./menu.sh   # Opção 4
-# IP do Líder: 192.168.101.7
-# Quantos drones: 7
-```
-
-**Máquina D — Sensores:**
-
-```bash
-./menu.sh   # Opção 5
-# IP do Líder: 192.168.101.7
-# Setores a cobrir: 9
-```
-
-**Monitoramento (qualquer máquina):**
-
-```
-http://192.168.101.7:8085
-```
-
-Portas que devem estar acessíveis na rede:
-
-| Porta | Protocolo | Serviço                        |
-|-------|-----------|--------------------------------|
-| 6000–6008 | TCP   | Brokers (um por setor)         |
-| 9876  | UDP Multicast | Sensores (grupo 224.1.2.3) |
-| 8085  | TCP (HTTP/WS) | Dashboard do Monitor       |
-
-### 10.4 Execução sem Docker (Go direto)
-
-```bash
-cd code
-
-# Compilar
-go build -o bin/broker ./cmd/broker
-go build -o bin/drone  ./cmd/drone
-go build -o bin/monitor ./cmd/monitor
-go build -o bin/sensor  ./cmd/sensor
-
-# Rodar o Líder
-./bin/broker -id=B9 -setor=Setor_Centro -tcp=0.0.0.0:6008
-
-# Rodar um seguidor
-./bin/broker -id=B1 -setor=Setor_Noroeste -tcp=0.0.0.0:6000 -lider=127.0.0.1:6008
-
-# Rodar o Monitor
-./bin/monitor -brokers=127.0.0.1:6008 -porta=8085
-
-# Rodar um Drone
-./bin/drone -id=Drone_NW_1 -brokers=127.0.0.1:6008 -x=250 -y=250
-
-# Rodar um Sensor
-./bin/sensor -id=radar_norte_1 -tipo=radar -setor=Setor_Norte -intervalo=20000 -x=263 -y=791
-```
-
-## 11. Ferramentas de Operação
-
-### `eliminar.sh` — Parar contêineres seletivamente
-
-Lista todos os contêineres ativos do HormuzNet com status e permite pará-los individualmente ou em massa:
+### 9.1 Testando o Ring Failover e Eleição
+Para forçar incidentes de rede e validar a tolerância a falhas distribuídas, utilize o script `eliminar.sh`:
 
 ```bash
 ./eliminar.sh
 ```
 
-```
+O script listará todos os contêineres ativos da simulação na máquina atual:
+```text
 === Contêineres Ativos do HormuzNet ===
-  1) hormuznet_broker9 (Up 5 minutes)
-  2) hormuznet_broker1 (Up 5 minutes)
-  3) hormuznet_drone_nw_1 (Up 3 minutes)
+  1) hormuznet_broker9 (Up 4 minutes)
+  2) hormuznet_broker2 (Up 4 minutes)
+  3) hormuznet_drone_n_2 (Up 2 minutes)
 
-Digite os números (ex: 1 3) ou 'tudo' para limpar tudo:
+Digite os números (ex: 1 3) ou 'tudo' para parar:
 ```
+- **Caso 1 (Ring Failover):** Pare um broker de setor (ex: `B2`). No dashboard, observe que o setor correspondente (`Setor_Norte`) ficará vermelho (Broker inativo), mas as ocorrências geradas ali continuarão a ser atendidas pelo broker herdeiro determinado no anel. Ao reiniciar o broker, ele recupera a custódia do setor automaticamente.
+- **Caso 2 (Eleição Bully):** Pare o Broker Líder (`B9`). Os outros brokers remanescentes identificarão a parada e iniciarão o algoritmo Bully. Em poucos segundos, um novo líder será acordado e assumirá o papel, mantendo o Monitor operacional.
 
-> **Dica de teste de resiliência:** derrube um broker com `./eliminar.sh` e observe o Ring Failover assumir o setor no dashboard em tempo real.
-
-### `terminais.sh` — Logs em janelas separadas
-
-Abre um terminal dedicado com `docker logs -f` para cada contêiner ativo. Suporta automaticamente `gnome-terminal`, `xterm`, `konsole` e `xfce4-terminal`:
+### 9.2 logs em Tempo Real (`terminais.sh`)
+Para depurar a troca de mensagens em nível de protocolo de soquetes, o utilitário `terminais.sh` abre dinamicamente abas individuais com o comando `docker logs -f` para cada contêiner ativo:
 
 ```bash
 ./terminais.sh
 ```
+*(Compatível com emuladores de terminal Gnome Terminal, XTerm, Konsole e XFCE Terminal).*
 
-## 12. Dashboard Web (Monitor)
+---
 
-Acesse via `http://localhost:8085` após subir o Monitor (opção 3 do menu).
+## 10. Concorrência e Práticas de Confiabilidade no Código Go
 
-O dashboard exibe em tempo real:
-
-- **Painel de Drones** — ID, estado (`DISPONIVEL` / `DESPACHADO` / `EM_MISSAO` / `RETORNANDO` / `ABATIDO`), broker responsável e posição.
-- **Painel de Brokers** — status vivo/morto de cada broker da malha, endereço e último heartbeat.
-- **Mapa Tático** — canvas com posições de drones e ocorrências ativas.
-- **Log de Eventos** — fila cronológica de eventos (despachos, failovers, missões concluídas, perdas).
-- **Ocorrências** — tabela com ID, tipo, criticidade e status (ESPERA / ANDAMENTO / CONCLUIDA).
-
-A interface usa WebSocket nativo e se reconecta automaticamente em caso de queda da conexão.
-
-## 13. Concorrência e Confiabilidade
-
-- Cada broker usa `sync.RWMutex` separado para drones, vizinhos, ocorrências, peers e fila de prioridades — evitando contenção desnecessária.
-- O despacho de drones verifica atomicamente disponibilidade antes de marcar o drone como ocupado.
-- Drones reconectam automaticamente a outro broker em caso de falha TCP (backoff exponencial até 30s).
-- Brokers reconectam ao líder em caso de perda de conexão (backoff exponencial até 30s).
-- Ocorrências atendidas por drones abatidos são **re-enfileiradas automaticamente**.
-- O monitor de-duplica eventos usando flags `alreadyDespatched`, `alreadyAbatido`, `alreadyCompleted` para evitar ruído visual.
-- Drones ociosos por mais de 60s são sinalizados em log para diagnóstico.
-
-## 14. Limitações Conhecidas
-
-- O grupo Multicast UDP (`224.1.2.3:9876`) requer que todos os hosts estejam na mesma sub-rede local (L2). Roteadores geralmente bloqueiam tráfego Multicast entre redes distintas.
-- O `docker-compose-temp.yml` gerado pelo `menu.sh` usa `network_mode: host` — incompatível com Docker Desktop no macOS/Windows. Use Linux.
-- A posição dos drones e sensores é cartesiana (0–1000), sem projeção geográfica real.
-- O `generate_all.py` sorteia tipos e posições de sensores aleatoriamente a cada execução.
-
-## 15. Documento Técnico
-
-A documentação técnica completa com fundamentação matemática do Relógio de Lamport, análise de desempenho e testes de resiliência está disponível em:
-
-```
-docs/TEC502 - Problema2 - Desbloqueio do Estreito de Ormuz.pdf
-docs/Barema P2 Estreito de Ormuz.pdf
-```
+O HormuzNet implementa conceitos estritos de programação concorrente em Go para evitar race conditions e starvation:
+- **Exclusão Mútua Separada:** O broker não utiliza um lock global. Estruturas como mapas de `drones`, `ocorrencias` locais, `fila` de prioridades, `vizinhos` e logs de `atendidos` possuem seus próprios primitivos `sync.RWMutex`, reduzindo o gargalo de concorrência.
+- **Prevenção de Fuga de Memória em Conexões:** Operações de escrita em soquetes TCP possuem prazos limite configurados com `SetWriteDeadline(time.Now().Add(2 * time.Second))`, impedindo goroutines de ficarem bloqueadas para sempre em conexões travadas na rede.
+- **Robustez nas Leituras:** O processamento de dados TCP utiliza `bufio.Scanner` com regras de delimitação de frames por `\n`, tratando de forma automática a fragmentação de pacotes de fluxo contínuo.
+- **Redundância e Filtro Tático no Monitor:** O dashboard possui chaves booleanas (`alreadyDespatched`, `alreadyAbatido`, etc.) para de-duplicar eventos concorrentes recebidos de múltiplos brokers e manter o canvas tático limpo.
