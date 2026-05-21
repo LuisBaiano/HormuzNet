@@ -313,11 +313,15 @@ func conectarBroker(addr string) {
 		json.NewEncoder(conn).Encode(reg)
 
 		estadoMu.Lock()
-		if _, ok := brokers[addr]; !ok {
-			brokers[addr] = &BrokerStatus{Addr: addr}
+		if b, ok := brokers[addr]; !ok {
+			brokers[addr] = &BrokerStatus{ID: obterBrokerID(addr), Addr: addr, Vivo: true, UltimoHB: time.Now()}
+		} else {
+			if b.ID == "" {
+				b.ID = obterBrokerID(addr)
+			}
+			b.Vivo = true
+			b.UltimoHB = time.Now()
 		}
-		brokers[addr].Vivo = true
-		brokers[addr].UltimoHB = time.Now()
 		estadoMu.Unlock()
 
 		addEvento("CONEXAO", fmt.Sprintf("Conectado ao broker %s", addr), "info")
@@ -1114,22 +1118,36 @@ function renderDrones() {
 
 function renderBrokers() {
   const cont = document.getElementById('lista-brokers');
-  const blist = (estado.brokers || []).slice().sort((a, b) => {
-    return a.addr.localeCompare(b.addr, undefined, { numeric: true, sensitivity: 'base' });
-  });
-  document.getElementById('cnt-brokers').textContent = blist.length;
-  cont.innerHTML = blist.map(b => {
-    const id = b.id || b.addr;
-    const hb = formatTime(b.ultimo_hb);
-    return '<div class="broker-card">'
-      + '<div class="br-led' + (b.vivo ? ' on' : '') + '"></div>'
+  const todosOsBrokers = [
+    { id: 'B1', setor: 'Setor_Noroeste' },
+    { id: 'B2', setor: 'Setor_Norte' },
+    { id: 'B3', setor: 'Setor_Nordeste' },
+    { id: 'B4', setor: 'Setor_Leste' },
+    { id: 'B5', setor: 'Setor_Sudeste' },
+    { id: 'B6', setor: 'Setor_Sul' },
+    { id: 'B7', setor: 'Setor_Sudoeste' },
+    { id: 'B8', setor: 'Setor_Oeste' },
+    { id: 'B9', setor: 'Setor_Centro' }
+  ];
+
+  cont.innerHTML = todosOsBrokers.map(eb => {
+    const b = (estado.brokers || []).find(x => x.id === eb.id);
+    const vivo = b ? b.vivo : false;
+    const addr = b ? b.addr : 'Offline';
+    const hb = b ? formatTime(b.ultimo_hb) : '--';
+    
+    return '<div class="broker-card" style="' + (!vivo ? 'opacity: 0.6;' : '') + '">'
+      + '<div class="br-led' + (vivo ? ' on' : '') + '"></div>'
       + '<div class="br-info">'
-      +   '<div class="br-id">' + id + '</div>'
-      +   '<div class="br-addr">' + b.addr + '</div>'
+      +   '<div class="br-id">' + eb.id + ' <span style="font-size:0.6rem;color:var(--textdim)">(' + eb.setor.split('_')[1] + ')</span></div>'
+      +   '<div class="br-addr">' + addr + '</div>'
       + '</div>'
       + '<div class="br-hb">' + hb + '</div>'
       + '</div>';
   }).join('');
+
+  const ativos = (estado.brokers || []).filter(x => x.vivo).length;
+  document.getElementById('cnt-brokers').textContent = ativos + '/' + todosOsBrokers.length;
 }
 
 function renderLog() {
@@ -1170,14 +1188,34 @@ function renderMapa() {
   ctx.beginPath(); ctx.moveTo(W/2,0); ctx.lineTo(W/2,H); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(0,H/2); ctx.lineTo(W,H/2); ctx.stroke();
 
+  const setorParaBroker = {
+    'Setor_Noroeste': 'B1',
+    'Setor_Norte': 'B2',
+    'Setor_Nordeste': 'B3',
+    'Setor_Leste': 'B4',
+    'Setor_Sudeste': 'B5',
+    'Setor_Sul': 'B6',
+    'Setor_Sudoeste': 'B7',
+    'Setor_Oeste': 'B8',
+    'Setor_Centro': 'B9'
+  };
+
   // Zonas dos Brokers (Grade 3x3 vazada no centro)
   const drawSec = (c, x, y, w, h, setorName) => {
     let fill = c;
     let stroke = c.replace('0.15', '0.5');
     const failoverBroker = estado.failovers ? estado.failovers[setorName] : null;
     if (failoverBroker) {
-      fill = 'rgba(255, 68, 68, 0.25)'; // Highlighted red for failover
-      stroke = 'rgba(255, 68, 68, 0.8)';
+      fill = 'rgba(255, 68, 68, 0.2)'; // Highlighted red/orange for failover
+      stroke = 'rgba(255, 68, 68, 0.7)';
+    } else {
+      const bId = setorParaBroker[setorName];
+      const broker = (estado.brokers || []).find(b => b.id === bId);
+      const vivo = broker ? broker.vivo : false;
+      if (!vivo) {
+        fill = 'rgba(30, 30, 30, 0.55)'; // Grayed out/darker for offline
+        stroke = 'rgba(255, 68, 68, 0.3)'; // Dim red stroke for offline
+      }
     }
     ctx.fillStyle = fill; ctx.fillRect(x, y, w, h);
     ctx.strokeStyle = stroke; ctx.strokeRect(x, y, w, h);
@@ -1196,23 +1234,34 @@ function renderMapa() {
   const getLabel = (defaultText, setorName) => {
     const failoverBroker = estado.failovers ? estado.failovers[setorName] : null;
     if (failoverBroker) {
-      return defaultText + ' (FAILOVER: ' + failoverBroker + ')';
+      return { text: defaultText + ' (FAILOVER: ' + failoverBroker + ')', color: 'rgba(255, 68, 68, 0.95)', font: 'bold 11px Orbitron' };
     }
-    return defaultText;
+    const bId = setorParaBroker[setorName];
+    const broker = (estado.brokers || []).find(b => b.id === bId);
+    const vivo = broker ? broker.vivo : false;
+    if (!vivo) {
+      return { text: defaultText + ' (INATIVO)', color: 'rgba(255, 68, 68, 0.65)', font: 'bold 10px Orbitron' };
+    }
+    return { text: defaultText, color: 'rgba(255, 255, 255, 0.85)', font: 'bold 11px Orbitron' };
   };
 
-  ctx.fillStyle = 'rgba(255,255,255,0.8)';
-  ctx.font = 'bold 11px Orbitron';
+  const drawLabel = (defaultText, setorName, tx, ty) => {
+    const lbl = getLabel(defaultText, setorName);
+    ctx.fillStyle = lbl.color;
+    ctx.font = lbl.font;
+    ctx.fillText(lbl.text, tx, ty);
+  };
+
   ctx.textAlign = 'center';
-  ctx.fillText(getLabel('B1: NOROESTE', 'Setor_Noroeste'), cw/2, ch/2);
-  ctx.fillText(getLabel('B2: NORTE', 'Setor_Norte'), cw*1.5, ch/2);
-  ctx.fillText(getLabel('B3: NORDESTE', 'Setor_Nordeste'), cw*2.5, ch/2);
-  ctx.fillText(getLabel('B4: LESTE', 'Setor_Leste'), cw*2.5, ch*1.5);
-  ctx.fillText(getLabel('B5: SUDESTE', 'Setor_Sudeste'), cw*2.5, ch*2.5);
-  ctx.fillText(getLabel('B6: SUL', 'Setor_Sul'), cw*1.5, ch*2.5);
-  ctx.fillText(getLabel('B7: SUDOESTE', 'Setor_Sudoeste'), cw/2, ch*2.5);
-  ctx.fillText(getLabel('B8: OESTE', 'Setor_Oeste'), cw/2, ch*1.5);
-  ctx.fillText(getLabel('B9: CENTRO', 'Setor_Centro'), cw*1.5, ch*1.5);
+  drawLabel('B1: NOROESTE', 'Setor_Noroeste', cw/2, ch/2);
+  drawLabel('B2: NORTE', 'Setor_Norte', cw*1.5, ch/2);
+  drawLabel('B3: NORDESTE', 'Setor_Nordeste', cw*2.5, ch/2);
+  drawLabel('B4: LESTE', 'Setor_Leste', cw*2.5, ch*1.5);
+  drawLabel('B5: SUDESTE', 'Setor_Sudeste', cw*2.5, ch*2.5);
+  drawLabel('B6: SUL', 'Setor_Sul', cw*1.5, ch*2.5);
+  drawLabel('B7: SUDOESTE', 'Setor_Sudoeste', cw/2, ch*2.5);
+  drawLabel('B8: OESTE', 'Setor_Oeste', cw/2, ch*1.5);
+  drawLabel('B9: CENTRO', 'Setor_Centro', cw*1.5, ch*1.5);
 
   const dlist = Object.values(estado.drones || {});
   if (!dlist.length) {
