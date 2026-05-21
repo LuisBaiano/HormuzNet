@@ -17,7 +17,7 @@ No cenário original, uma arquitetura centralizada cria um ponto único de falha
 
 ### 2.1 Diagrama da Arquitetura
 
-![Arquitetura HormuzNet](images/arquitetura_hormuz.png)
+![Arquitetura HormuzNet](images/arquitetura.png)
 
 ### 2.2 Componentes Principais
 
